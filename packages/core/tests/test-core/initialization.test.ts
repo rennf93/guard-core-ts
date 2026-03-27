@@ -1,7 +1,13 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
 import { HandlerInitializer } from '../../src/core/initialization/handler-initializer.js';
 import { SecurityConfigSchema } from '../../src/models/config.js';
 import { defaultLogger } from '../../src/models/logger.js';
+
+const mockFetch = vi.fn().mockResolvedValue({
+  json: async () => ({ prefixes: [{ ip_prefix: '52.0.0.0/8', service: 'AMAZON' }] }),
+  text: async () => '',
+});
+vi.stubGlobal('fetch', mockFetch);
 
 function createMockAgent() {
   return {

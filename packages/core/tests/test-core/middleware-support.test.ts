@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { initializeSecurityMiddleware } from '../../src/middleware-support.js';
 import { SecurityConfigSchema } from '../../src/models/config.js';
 import { defaultLogger } from '../../src/models/logger.js';
@@ -83,6 +83,11 @@ describe('initializeSecurityMiddleware', () => {
   });
 
   it('middlewareProtocol refreshCloudIpRanges with cloud config', async () => {
+    const mockFetch = vi.fn().mockResolvedValue({
+      json: async () => ({ prefixes: [{ ip_prefix: '52.0.0.0/8', service: 'AMAZON' }] }),
+    });
+    vi.stubGlobal('fetch', mockFetch);
+
     const config = SecurityConfigSchema.parse({
       enableRedis: false,
       blockCloudProviders: ['AWS'],
@@ -92,6 +97,7 @@ describe('initializeSecurityMiddleware', () => {
     );
 
     await components.middlewareProtocol.refreshCloudIpRanges();
+    vi.unstubAllGlobals();
   });
 
   it('sets behavioral processor guard decorator', async () => {
