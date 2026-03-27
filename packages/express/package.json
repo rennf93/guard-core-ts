@@ -27,8 +27,8 @@
   },
   "devDependencies": {
     "tsup": "^8",
-    "vitest": "^3",
-    "typescript": "^5.8",
+    "vitest": "^4",
+    "typescript": "^6.0",
     "@types/express": "^5"
   },
   "peerDependencies": {

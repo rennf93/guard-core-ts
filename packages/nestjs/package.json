@@ -27,17 +27,17 @@
   },
   "devDependencies": {
     "tsup": "^8",
-    "vitest": "^3",
-    "typescript": "^5.8",
-    "@nestjs/common": "^10",
-    "@nestjs/core": "^10",
+    "vitest": "^4",
+    "typescript": "^6.0",
+    "@nestjs/common": "^11",
+    "@nestjs/core": "^11",
     "@types/express": "^5",
     "reflect-metadata": "^0.2",
     "rxjs": "^7"
   },
   "peerDependencies": {
-    "@nestjs/common": "^10",
-    "@nestjs/core": "^10",
+    "@nestjs/common": "^11",
+    "@nestjs/core": "^11",
     "reflect-metadata": "^0.1 || ^0.2"
   },
   "license": "MIT",
