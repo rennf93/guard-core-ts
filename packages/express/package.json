@@ -1,0 +1,56 @@
+{
+  "name": "@guardcore/express",
+  "version": "1.0.0",
+  "description": "Express adapter for @guardcore/core security middleware",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "lint": "tsc --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@guardcore/core": "workspace:*"
+  },
+  "devDependencies": {
+    "tsup": "^8",
+    "vitest": "^3",
+    "typescript": "^5.8",
+    "@types/express": "^5"
+  },
+  "peerDependencies": {
+    "express": "^4 || ^5",
+    "cors": "^2"
+  },
+  "peerDependenciesMeta": {
+    "cors": {
+      "optional": true
+    }
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rennf93/guard-core-ts.git",
+    "directory": "packages/express"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}

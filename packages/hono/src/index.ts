@@ -1,0 +1,21 @@
+export { createGuardMiddleware } from './middleware.js';
+export type { GuardMiddlewareOptions } from './middleware.js';
+export { configureCors } from './cors.js';
+export { HonoGuardRequest, HonoGuardResponse, HonoResponseFactory } from './adapters.js';
+
+export {
+  SecurityConfigSchema,
+  BaseSecurityDecorator,
+  SecurityDecorator,
+  RouteConfig,
+  BehaviorRule,
+  defaultLogger,
+} from '@guardcore/core';
+
+export type {
+  SecurityConfig,
+  ResolvedSecurityConfig,
+  GuardRequest,
+  GuardResponse,
+  Logger,
+} from '@guardcore/core';

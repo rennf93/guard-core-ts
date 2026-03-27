@@ -1,0 +1,77 @@
+{
+  "name": "@guardcore/core",
+  "version": "1.0.0",
+  "description": "Framework-agnostic security middleware engine for Node.js and edge runtimes",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "tsc --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "ipaddr.js": "^2.2",
+    "zod": "^3.24"
+  },
+  "devDependencies": {
+    "@vitest/coverage-v8": "^3.2.4",
+    "tsup": "^8",
+    "typescript": "^5.8",
+    "vitest": "^3"
+  },
+  "peerDependencies": {
+    "acorn": "^8",
+    "he": "^1",
+    "ioredis": "^5",
+    "lru-cache": "^11",
+    "maxmind": "^4",
+    "re2-wasm": "^1"
+  },
+  "peerDependenciesMeta": {
+    "ioredis": {
+      "optional": true
+    },
+    "re2-wasm": {
+      "optional": true
+    },
+    "maxmind": {
+      "optional": true
+    },
+    "lru-cache": {
+      "optional": true
+    },
+    "he": {
+      "optional": true
+    },
+    "acorn": {
+      "optional": true
+    }
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rennf93/guard-core-ts.git",
+    "directory": "packages/core"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}
