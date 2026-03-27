@@ -27,12 +27,12 @@
   },
   "devDependencies": {
     "tsup": "^8",
-    "vitest": "^3",
-    "typescript": "^5.8",
-    "fastify": "^4"
+    "vitest": "^4",
+    "typescript": "^6.0",
+    "fastify": "^5"
   },
   "peerDependencies": {
-    "fastify": "^4",
+    "fastify": "^5",
     "@fastify/cors": "^9"
   },
   "peerDependenciesMeta": {
