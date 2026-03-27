@@ -104,7 +104,7 @@ function sendFastifyResponse(reply: FastifyReply, response: GuardResponse): void
   }
 
   if (response.headers['location']) {
-    reply.redirect(response.statusCode, response.headers['location']);
+    reply.redirect(response.headers['location']);
     return;
   }
 

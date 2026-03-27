@@ -18,8 +18,8 @@ export const DynamicRulesSchema = z.object({
   endpointRateLimits: z.record(z.string(), z.tuple([z.number(), z.number()])).default({}),
   blockedCloudProviders: z
     .array(z.enum(VALID_CLOUD_PROVIDERS))
-    .transform((arr) => new Set(arr))
-    .default([]),
+    .default([])
+    .transform((arr) => new Set(arr)),
   blockedUserAgents: z.array(z.string()).default([]),
   suspiciousPatterns: z.array(z.string()).default([]),
   enablePenetrationDetection: z.boolean().nullable().default(null),

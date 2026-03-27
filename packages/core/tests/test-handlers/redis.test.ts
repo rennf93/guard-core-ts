@@ -5,7 +5,7 @@ import { defaultLogger } from '../../src/models/logger.js';
 
 vi.mock('ioredis', () => {
   const store = new Map<string, string>();
-  const MockRedis = vi.fn().mockImplementation(() => ({
+  function MockRedis() { return {
     get: vi.fn((key: string) => Promise.resolve(store.get(key) ?? null)),
     set: vi.fn((key: string, value: string) => { store.set(key, value); return Promise.resolve('OK'); }),
     setex: vi.fn((key: string, _ttl: number, value: string) => { store.set(key, value); return Promise.resolve('OK'); }),
@@ -29,7 +29,7 @@ vi.mock('ioredis', () => {
     ping: vi.fn(() => Promise.resolve('PONG')),
     quit: vi.fn(() => Promise.resolve('OK')),
     script: vi.fn(() => Promise.resolve('sha123')),
-  }));
+  }; }
   return { default: MockRedis };
 });
 

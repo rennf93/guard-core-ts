@@ -101,8 +101,8 @@ export const SecurityConfigSchema = z.object({
 
   blockCloudProviders: z
     .array(z.enum(VALID_CLOUD_PROVIDERS))
-    .transform((arr) => new Set(arr))
-    .default([]),
+    .default([])
+    .transform((arr) => new Set(arr)),
   cloudIpRefreshInterval: z.number().int().min(60).max(86400).default(3600),
 
   excludePaths: z.array(z.string()).default([]),

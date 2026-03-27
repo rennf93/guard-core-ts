@@ -181,7 +181,7 @@ describe('HandlerInitializer with agent', () => {
 });
 
 vi.mock('ioredis', () => {
-  const MockRedis = vi.fn().mockImplementation(() => ({
+  function MockRedis() { return {
     get: vi.fn().mockResolvedValue(null),
     set: vi.fn().mockResolvedValue('OK'),
     setex: vi.fn().mockResolvedValue('OK'),
@@ -193,7 +193,7 @@ vi.mock('ioredis', () => {
     incr: vi.fn().mockResolvedValue(1),
     expire: vi.fn().mockResolvedValue(1),
     exists: vi.fn().mockResolvedValue(0),
-  }));
+  }; }
   return { default: MockRedis };
 });
 
