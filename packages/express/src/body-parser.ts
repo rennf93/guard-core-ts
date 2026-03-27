@@ -1,7 +1,7 @@
-import type { Request, Response, NextFunction } from 'express';
+import type { Request, Response, NextFunction, RequestHandler } from 'express';
 import express from 'express';
 
-export function guardBodyParser() {
+export function guardBodyParser(): RequestHandler {
   return express.json({
     verify: (req: Request, _res: Response, buf: Buffer, _encoding: string) => {
       (req as unknown as Record<string, unknown>)['rawBody'] = buf;
@@ -9,7 +9,7 @@ export function guardBodyParser() {
   });
 }
 
-export function guardUrlEncodedParser() {
+export function guardUrlEncodedParser(): RequestHandler {
   return express.urlencoded({
     extended: true,
     verify: (req: Request, _res: Response, buf: Buffer, _encoding: string) => {
