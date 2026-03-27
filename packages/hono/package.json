@@ -41,7 +41,6 @@
     "directory": "packages/hono"
   },
   "publishConfig": {
-    "access": "public",
-    "provenance": true
+    "access": "public"
   }
 }
