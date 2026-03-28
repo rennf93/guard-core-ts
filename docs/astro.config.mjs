@@ -1,12 +1,35 @@
-// @ts-check
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
+import starlightTypeDoc, { typeDocSidebarGroup } from 'starlight-typedoc';
 
 export default defineConfig({
+	site: 'https://rennf93.github.io',
+	base: '/guard-core-ts',
 	integrations: [
 		starlight({
 			title: '@guardcore',
 			social: [{ icon: 'github', label: 'GitHub', href: 'https://github.com/rennf93/guard-core-ts' }],
+			plugins: [
+				starlightTypeDoc({
+					entryPoints: [
+						'../packages/core/src/index.ts',
+						'../packages/express/src/index.ts',
+						'../packages/fastify/src/index.ts',
+						'../packages/hono/src/index.ts',
+						'../packages/nestjs/src/index.ts',
+					],
+					tsconfig: '../tsconfig.typedoc.json',
+					output: 'api',
+					sidebar: {
+						label: 'API Reference',
+						collapsed: true,
+					},
+					typeDoc: {
+						excludePrivate: true,
+						excludeInternal: true,
+					},
+				}),
+			],
 			sidebar: [
 				{
 					label: 'Getting Started',
@@ -59,6 +82,7 @@ export default defineConfig({
 					label: 'Reference',
 					autogenerate: { directory: 'reference' },
 				},
+				typeDocSidebarGroup,
 			],
 		}),
 	],

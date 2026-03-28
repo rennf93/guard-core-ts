@@ -1,0 +1,28 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "experimentalDecorators": true,
+    "emitDecoratorMetadata": true,
+    "paths": {
+      "@guardcore/core": ["./packages/core/src/index.ts"],
+      "@guardcore/express": ["./packages/express/src/index.ts"],
+      "@guardcore/fastify": ["./packages/fastify/src/index.ts"],
+      "@guardcore/hono": ["./packages/hono/src/index.ts"],
+      "@guardcore/nestjs": ["./packages/nestjs/src/index.ts"]
+    }
+  },
+  "include": [
+    "packages/core/src/**/*",
+    "packages/express/src/**/*",
+    "packages/fastify/src/**/*",
+    "packages/hono/src/**/*",
+    "packages/nestjs/src/**/*"
+  ],
+  "exclude": [
+    "**/tests/**",
+    "**/dist/**",
+    "**/node_modules/**",
+    "examples/**",
+    "docs/**"
+  ]
+}
