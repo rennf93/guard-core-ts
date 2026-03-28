@@ -109,46 +109,46 @@ const handler = guard.rateLimit(5, 60)(
 ### Access Control
 | Method | Description |
 |--------|-------------|
-| [`requireIp(whitelist?, blacklist?)`](/decorators/access-control/) | IP whitelist/blacklist per route |
-| [`blockCountries(countries)`](/decorators/access-control/) | Block specific countries |
-| [`allowCountries(countries)`](/decorators/access-control/) | Allow only specific countries |
-| [`blockClouds(providers?)`](/decorators/access-control/) | Block cloud provider IPs |
-| [`bypass(checks)`](/decorators/access-control/) | Bypass specific security checks |
+| [`requireIp(whitelist?, blacklist?)`](../access-control/) | IP whitelist/blacklist per route |
+| [`blockCountries(countries)`](../access-control/) | Block specific countries |
+| [`allowCountries(countries)`](../access-control/) | Allow only specific countries |
+| [`blockClouds(providers?)`](../access-control/) | Block cloud provider IPs |
+| [`bypass(checks)`](../access-control/) | Bypass specific security checks |
 
 ### Authentication
 | Method | Description |
 |--------|-------------|
-| [`requireHttps()`](/decorators/authentication/) | Require HTTPS for this route |
-| [`requireAuth(type?)`](/decorators/authentication/) | Require authorization header |
-| [`apiKeyAuth(headerName?)`](/decorators/authentication/) | Require API key header |
-| [`requireHeaders(headers)`](/decorators/authentication/) | Require specific headers |
+| [`requireHttps()`](../authentication/) | Require HTTPS for this route |
+| [`requireAuth(type?)`](../authentication/) | Require authorization header |
+| [`apiKeyAuth(headerName?)`](../authentication/) | Require API key header |
+| [`requireHeaders(headers)`](../authentication/) | Require specific headers |
 
 ### Rate Limiting
 | Method | Description |
 |--------|-------------|
-| [`rateLimit(requests, window?)`](/decorators/rate-limiting/) | Per-route rate limit |
-| [`geoRateLimit(limits)`](/decorators/rate-limiting/) | Country-based rate limits |
+| [`rateLimit(requests, window?)`](../rate-limiting/) | Per-route rate limit |
+| [`geoRateLimit(limits)`](../rate-limiting/) | Country-based rate limits |
 
 ### Behavioral
 | Method | Description |
 |--------|-------------|
-| [`usageMonitor(maxCalls, window?, action?)`](/decorators/behavioral/) | Monitor endpoint call frequency |
-| [`returnMonitor(pattern, maxOccurrences, window?, action?)`](/decorators/behavioral/) | Monitor response patterns |
-| [`behaviorAnalysis(rules)`](/decorators/behavioral/) | Custom behavior rules |
-| [`suspiciousFrequency(maxFrequency, window?, action?)`](/decorators/behavioral/) | Flag suspicious request frequency |
+| [`usageMonitor(maxCalls, window?, action?)`](../behavioral/) | Monitor endpoint call frequency |
+| [`returnMonitor(pattern, maxOccurrences, window?, action?)`](../behavioral/) | Monitor response patterns |
+| [`behaviorAnalysis(rules)`](../behavioral/) | Custom behavior rules |
+| [`suspiciousFrequency(maxFrequency, window?, action?)`](../behavioral/) | Flag suspicious request frequency |
 
 ### Content Filtering
 | Method | Description |
 |--------|-------------|
-| [`blockUserAgents(patterns)`](/decorators/content-filtering/) | Block specific user agents |
-| [`contentTypeFilter(allowedTypes)`](/decorators/content-filtering/) | Restrict content types |
-| [`maxRequestSize(sizeBytes)`](/decorators/content-filtering/) | Limit request body size |
-| [`requireReferrer(allowedDomains)`](/decorators/content-filtering/) | Require valid referrer |
-| [`customValidation(validator)`](/decorators/content-filtering/) | Custom validation function |
+| [`blockUserAgents(patterns)`](../content-filtering/) | Block specific user agents |
+| [`contentTypeFilter(allowedTypes)`](../content-filtering/) | Restrict content types |
+| [`maxRequestSize(sizeBytes)`](../content-filtering/) | Limit request body size |
+| [`requireReferrer(allowedDomains)`](../content-filtering/) | Require valid referrer |
+| [`customValidation(validator)`](../content-filtering/) | Custom validation function |
 
 ### Advanced
 | Method | Description |
 |--------|-------------|
-| [`timeWindow(startTime, endTime)`](/decorators/advanced/) | Restrict access to time windows |
-| [`suspiciousDetection(enabled?)`](/decorators/advanced/) | Toggle penetration detection |
-| [`honeypotDetection(trapFields)`](/decorators/advanced/) | Add honeypot form fields |
+| [`timeWindow(startTime, endTime)`](../advanced/) | Restrict access to time windows |
+| [`suspiciousDetection(enabled?)`](../advanced/) | Toggle penetration detection |
+| [`honeypotDetection(trapFields)`](../advanced/) | Add honeypot form fields |

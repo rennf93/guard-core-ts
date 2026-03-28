@@ -6,7 +6,7 @@ hero:
   tagline: "Security middleware engine for Node.js and edge runtimes. IP filtering, rate limiting, penetration detection, and more — for Express, Fastify, NestJS, and Hono."
   actions:
     - text: Get Started
-      link: /getting-started/quick-start/
+      link: getting-started/quick-start/
       icon: right-arrow
     - text: GitHub
       link: https://github.com/rennf93/guard-core-ts
@@ -14,26 +14,11 @@ hero:
       variant: minimal
 ---
 
-import { Card, CardGrid } from '@astrojs/starlight/components';
+import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
 
 <CardGrid>
-  <Card title="Quick Start" icon="rocket">
-    Working security middleware in under 15 lines.
-    [Get started](/getting-started/quick-start/)
-  </Card>
-
-  <Card title="Configuration" icon="setting">
-    44 fields for rate limiting, IP filtering, detection, headers, CORS.
-    [SecurityConfig](/configuration/security-config/)
-  </Card>
-
-  <Card title="Adapters" icon="puzzle">
-    Express, Fastify, NestJS, and Hono (edge-safe).
-    [Browse adapters](/adapters/express/)
-  </Card>
-
-  <Card title="Architecture" icon="open-book">
-    17-check pipeline, handler registry, protocol layer.
-    [Explore](/architecture/overview/)
-  </Card>
+  <LinkCard title="Quick Start" description="Working security middleware in under 15 lines." href="getting-started/quick-start/" />
+  <LinkCard title="Configuration" description="44 fields for rate limiting, IP filtering, detection, headers, CORS." href="configuration/security-config/" />
+  <LinkCard title="Adapters" description="Express, Fastify, NestJS, and Hono (edge-safe)." href="adapters/express/" />
+  <LinkCard title="Architecture" description="17-check pipeline, handler registry, protocol layer." href="architecture/overview/" />
 </CardGrid>

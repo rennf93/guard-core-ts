@@ -76,7 +76,7 @@ const resolved = SecurityConfigSchema.parse(config);
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `securityHeaders` | `object \| null` | See [Security Headers](/configuration/security-headers/) | Security headers configuration object |
+| `securityHeaders` | `object \| null` | See [Security Headers](../security-headers/) | Security headers configuration object |
 | `enforceHttps` | `boolean` | `false` | Redirect HTTP requests to HTTPS |
 
 ## CORS
