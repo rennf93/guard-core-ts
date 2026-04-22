@@ -1,0 +1,47 @@
+name: Greetings
+
+on: [pull_request_target, issues]
+
+jobs:
+  greeting:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: write
+    steps:
+    - uses: actions/first-interaction@v1
+      with:
+        repo-token: ${{ secrets.GITHUB_TOKEN }}
+        issue-message: |
+            Thanks for opening your first issue on **guard-core-ts**!
+
+            To help us triage quickly, please make sure your report includes:
+            - A clear reproduction (a short TS snippet or failing vitest test is ideal)
+            - Output of `node --version && pnpm --version`
+            - The TypeScript version (`pnpm tsc --version`) and which `@guardcore/*` packages are involved (core, express, fastify, hono, nestjs)
+            - Runtime: Node / Deno / Bun / Cloudflare Workers, plus the runtime version
+            - Operating system, framework version (Express, Fastify, Hono, NestJS), and Redis configuration if relevant
+            - Logs / stack traces / middleware ordering details
+
+            A few pointers:
+            - Read [CONTRIBUTING.md](../blob/master/CONTRIBUTING.md) for the bug-report and enhancement guidelines.
+            - We follow the [Contributor Covenant Code of Conduct](../blob/master/CODE_OF_CONDUCT.md).
+            - **Security vulnerability?** Do **not** open a public issue — please follow [SECURITY.md](../blob/master/SECURITY.md) and use GitHub's private vulnerability reporting.
+
+            Thanks again — a maintainer will be with you soon.
+        pr-message: |
+            Thanks for opening your first pull request on **guard-core-ts**!
+
+            Quick checklist before review (most of these are enforced by CI, but worth a glance):
+            - [ ] `pnpm install` — workspace resolves cleanly
+            - [ ] `pnpm lint` (or `make lint`) — turbo lint pipeline passes for every package you touched
+            - [ ] `pnpm test` (or `make test-all`) — vitest suites pass across all packages
+            - [ ] `pnpm build` — every package builds via `tsup` without warnings
+            - [ ] Coverage didn't regress — `make test-coverage`
+            - [ ] No `// @ts-ignore` / `// @ts-expect-error` / `any` shortcuts; pre-existing violations in touched files are fixed
+            - [ ] Added an entry under `## Unreleased` in [CHANGELOG.md](../blob/master/CHANGELOG.md)
+            - [ ] If you touched a public API, updated the relevant page under `docs/`
+
+            See [CONTRIBUTING.md](../blob/master/CONTRIBUTING.md) for the full workflow and the [Code of Conduct](../blob/master/CODE_OF_CONDUCT.md) for the community standards we follow.
+
+            Welcome aboard — a maintainer will review shortly.

@@ -1,0 +1,129 @@
+"area: protocols":
+  - changed-files:
+      - any-glob-to-any-file:
+          - packages/core/src/protocols/**
+
+"area: checks":
+  - changed-files:
+      - any-glob-to-any-file:
+          - packages/core/src/core/checks/**
+
+"area: detection-engine":
+  - changed-files:
+      - any-glob-to-any-file:
+          - packages/core/src/detection-engine/**
+
+"area: handlers":
+  - changed-files:
+      - any-glob-to-any-file:
+          - packages/core/src/handlers/**
+
+"area: decorators":
+  - changed-files:
+      - any-glob-to-any-file:
+          - packages/core/src/decorators/**
+
+"area: core-subsystems":
+  - changed-files:
+      - any-glob-to-any-file:
+          - packages/core/src/core/responses/**
+          - packages/core/src/core/routing/**
+          - packages/core/src/core/validation/**
+          - packages/core/src/core/bypass/**
+          - packages/core/src/core/behavioral/**
+          - packages/core/src/core/events/**
+          - packages/core/src/core/initialization/**
+
+"area: models":
+  - changed-files:
+      - any-glob-to-any-file:
+          - packages/core/src/models/**
+
+"area: middleware-support":
+  - changed-files:
+      - any-glob-to-any-file:
+          - packages/core/src/middleware-support.ts
+          - packages/core/src/index.ts
+
+"area: utils":
+  - changed-files:
+      - any-glob-to-any-file:
+          - packages/core/src/utils.ts
+
+"package: core":
+  - changed-files:
+      - any-glob-to-any-file:
+          - packages/core/**
+
+"package: express":
+  - changed-files:
+      - any-glob-to-any-file:
+          - packages/express/**
+
+"package: fastify":
+  - changed-files:
+      - any-glob-to-any-file:
+          - packages/fastify/**
+
+"package: hono":
+  - changed-files:
+      - any-glob-to-any-file:
+          - packages/hono/**
+
+"package: nestjs":
+  - changed-files:
+      - any-glob-to-any-file:
+          - packages/nestjs/**
+
+tests:
+  - changed-files:
+      - any-glob-to-any-file:
+          - packages/*/tests/**
+          - packages/*/src/**/*.test.ts
+
+examples:
+  - changed-files:
+      - any-glob-to-any-file:
+          - examples/**
+
+fixtures:
+  - changed-files:
+      - any-glob-to-any-file:
+          - fixtures/**
+
+documentation:
+  - changed-files:
+      - any-glob-to-any-file:
+          - docs/**
+          - README.md
+          - CHANGELOG.md
+          - CONTRIBUTING.md
+          - SECURITY.md
+          - CODE_OF_CONDUCT.md
+          - LICENSE
+
+ci:
+  - changed-files:
+      - any-glob-to-any-file:
+          - .github/**
+
+build:
+  - changed-files:
+      - any-glob-to-any-file:
+          - Makefile
+          - Dockerfile
+          - compose.yml
+          - turbo.json
+          - tsconfig.base.json
+          - tsconfig.typedoc.json
+          - pnpm-workspace.yaml
+          - packages/*/tsup.config.ts
+          - packages/*/vitest.config.ts
+          - packages/*/tsconfig.json
+
+dependencies:
+  - changed-files:
+      - any-glob-to-any-file:
+          - package.json
+          - pnpm-lock.yaml
+          - packages/*/package.json

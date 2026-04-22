@@ -1,0 +1,135 @@
+- name: "area: protocols"
+  color: "0E8A16"
+  description: "Touches packages/core/src/protocols/"
+
+- name: "area: checks"
+  color: "0E8A16"
+  description: "Touches packages/core/src/core/checks/"
+
+- name: "area: detection-engine"
+  color: "0E8A16"
+  description: "Touches packages/core/src/detection-engine/"
+
+- name: "area: handlers"
+  color: "0E8A16"
+  description: "Touches packages/core/src/handlers/"
+
+- name: "area: decorators"
+  color: "0E8A16"
+  description: "Touches packages/core/src/decorators/"
+
+- name: "area: core-subsystems"
+  color: "0E8A16"
+  description: "Touches packages/core/src/core/{responses,routing,validation,bypass,behavioral,events,initialization}/"
+
+- name: "area: models"
+  color: "0E8A16"
+  description: "Touches packages/core/src/models/"
+
+- name: "area: middleware-support"
+  color: "0E8A16"
+  description: "Touches packages/core/src/middleware-support.ts or index.ts"
+
+- name: "area: utils"
+  color: "0E8A16"
+  description: "Touches packages/core/src/utils.ts"
+
+- name: "package: core"
+  color: "0052CC"
+  description: "Changes inside @guardcore/core"
+
+- name: "package: express"
+  color: "0052CC"
+  description: "Changes inside @guardcore/express"
+
+- name: "package: fastify"
+  color: "0052CC"
+  description: "Changes inside @guardcore/fastify"
+
+- name: "package: hono"
+  color: "0052CC"
+  description: "Changes inside @guardcore/hono"
+
+- name: "package: nestjs"
+  color: "0052CC"
+  description: "Changes inside @guardcore/nestjs"
+
+- name: tests
+  color: "FBCA04"
+  description: "Test suite changes (vitest)"
+
+- name: examples
+  color: "C5DEF5"
+  description: "examples/ apps"
+
+- name: fixtures
+  color: "C5DEF5"
+  description: "Shared test fixtures"
+
+- name: documentation
+  color: "0075CA"
+  description: "Docs, README, CHANGELOG, governance files"
+
+- name: ci
+  color: "5319E7"
+  description: "GitHub Actions"
+
+- name: build
+  color: "BFD4F2"
+  description: "Makefile / Docker / turbo / tsup / vitest / tsconfig"
+
+- name: dependencies
+  color: "0366D6"
+  description: "package.json or pnpm-lock.yaml"
+
+- name: bug
+  color: "D73A4A"
+  description: "Confirmed defect"
+
+- name: enhancement
+  color: "A2EEEF"
+  description: "Improvement to an existing feature"
+
+- name: security
+  color: "B60205"
+  description: "Security-related issue (use private reporting first!)"
+
+- name: "good-first-issue"
+  color: "7057FF"
+  description: "Approachable issue for new contributors"
+
+- name: "help-wanted"
+  color: "008672"
+  description: "Maintainers welcome external help"
+
+- name: pinned
+  color: "FEF2C0"
+  description: "Exempt from staleness automation"
+
+- name: "no-issue-activity"
+  color: "EEEEEE"
+  description: "Marked stale by automation"
+
+- name: "no-pr-activity"
+  color: "EEEEEE"
+  description: "Marked stale by automation"
+
+- name: "needs-summary"
+  color: "1D76DB"
+  description: "Trigger an AI-generated summary on this issue (auto-removed after run)"
+
+- name: "no-summary"
+  color: "EEEEEE"
+  description: "Suppress automated AI summaries on this issue"
+
+- name: "work-in-progress"
+  color: "FBCA04"
+  description: "PR is not ready for review"
+
+- name: blocked
+  color: "B60205"
+  description: "Blocked by an external dependency or upstream issue"
+
+- name: "breaking-change"
+  color: "B60205"
+  description: "PR contains a backward-incompatible change"
