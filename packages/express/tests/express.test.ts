@@ -385,6 +385,22 @@ describe('createSecurityMiddleware full flow', () => {
     expect(mockInitialize).toHaveBeenCalledTimes(1);
   });
 
+  it('initializes once under concurrent first requests', async () => {
+    let releaseInit: ((value: unknown) => void) | undefined;
+    mockInitialize.mockImplementationOnce(
+      () => new Promise((resolve) => { releaseInit = resolve; }),
+    );
+
+    const middleware = createSecurityMiddleware({ config: {} });
+    const first = middleware(createMockReqForMiddleware(), createMockResForMiddleware() as never, vi.fn());
+    const second = middleware(createMockReqForMiddleware(), createMockResForMiddleware() as never, vi.fn());
+
+    releaseInit!(sharedMockComponents);
+    await Promise.all([first, second]);
+
+    expect(mockInitialize).toHaveBeenCalledTimes(1);
+  });
+
   it('sends response when passthrough handler returns a response', async () => {
     const passthroughResponse: GuardResponse = {
       statusCode: 200,

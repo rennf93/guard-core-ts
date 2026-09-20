@@ -81,6 +81,34 @@ describe('NestGuardRequest', () => {
     expect(request.headers).toEqual({ 'user-agent': 'Test/1.0' });
   });
 
+  it('joins array-valued headers into a single string', () => {
+    const req = new NestGuardRequest(createMockExpressRequest({
+      headers: { 'set-cookie': ['a=1', 'b=2'], 'user-agent': 'Test/1.0' },
+    }));
+    expect(req.headers['set-cookie']).toBe('a=1, b=2');
+  });
+
+  it('drops undefined header values instead of leaking them to the engine', () => {
+    const req = new NestGuardRequest(createMockExpressRequest({
+      headers: { 'user-agent': 'Test/1.0', 'x-empty': undefined },
+    }));
+    expect(req.headers).toEqual({ 'user-agent': 'Test/1.0' });
+  });
+
+  it('flattens array and nested query params into strings', () => {
+    const req = new NestGuardRequest(createMockExpressRequest({
+      query: { tags: ['a', 'b'], nested: { x: 1 }, flag: 1 },
+    }));
+    expect(req.queryParams).toEqual({ tags: 'a, b', nested: '{"x":1}', flag: '1' });
+  });
+
+  it('drops null and undefined query params', () => {
+    const req = new NestGuardRequest(createMockExpressRequest({
+      query: { q: '1', gone: undefined, nulled: null },
+    }));
+    expect(req.queryParams).toEqual({ q: '1' });
+  });
+
   it('returns correct queryParams', () => {
     expect(request.queryParams).toEqual({ q: '1' });
   });
