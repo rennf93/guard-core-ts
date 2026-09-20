@@ -57,6 +57,36 @@ describe('FastifyGuardRequest', () => {
     expect(req.clientHost).toBeNull();
   });
 
+  it('prefers the raw socket peer address over request.ip', () => {
+    const req = new FastifyGuardRequest(createMockFastifyRequest({
+      raw: { socket: { remoteAddress: '10.1.1.1' } },
+      ip: '4.4.4.4',
+    }));
+    expect(req.clientHost).toBe('10.1.1.1');
+  });
+
+  it('falls back to request.socket then request.ip for clientHost', () => {
+    const req = new FastifyGuardRequest(createMockFastifyRequest({
+      socket: { remoteAddress: '10.2.2.2' },
+      ip: '4.4.4.4',
+    }));
+    expect(req.clientHost).toBe('10.2.2.2');
+  });
+
+  it('joins array-valued headers into a single string', () => {
+    const req = new FastifyGuardRequest(createMockFastifyRequest({
+      headers: { 'set-cookie': ['a=1', 'b=2'], 'user-agent': 'Test/1.0' },
+    }));
+    expect(req.headers['set-cookie']).toBe('a=1, b=2');
+  });
+
+  it('flattens array and nested query params into strings', () => {
+    const req = new FastifyGuardRequest(createMockFastifyRequest({
+      query: { tags: ['a', 'b'], nested: { x: 1 }, flag: 1 },
+    }));
+    expect(req.queryParams).toEqual({ tags: 'a, b', nested: '{"x":1}', flag: '1' });
+  });
+
   it('returns correct headers', () => {
     expect(request.headers).toEqual({ 'user-agent': 'Test/1.0' });
   });
@@ -243,14 +273,15 @@ describe('guardPlugin', () => {
     (mockComponents.errorResponseFactory.processResponse as ReturnType<typeof vi.fn>).mockImplementation((_: unknown, r: unknown) => Promise.resolve(r));
   });
 
-  it('registers onRequest and onSend hooks', async () => {
+  it('registers onRequest, preValidation and onSend hooks', async () => {
     const { mockFastify } = await createPlugin();
     const typedFastify = mockFastify as unknown as { addHook: ReturnType<typeof vi.fn> };
     expect(typedFastify.addHook).toHaveBeenCalledWith('onRequest', expect.anything());
+    expect(typedFastify.addHook).toHaveBeenCalledWith('preValidation', expect.anything());
     expect(typedFastify.addHook).toHaveBeenCalledWith('onSend', expect.anything());
   });
 
-  it('onRequest calls next when pipeline allows', async () => {
+  it('onRequest passes the request through when no passthrough or bypass applies', async () => {
     const { hooks } = await createPlugin();
     const request = createMockRequest();
     const reply = createMockReply();
@@ -258,6 +289,8 @@ describe('guardPlugin', () => {
     await hooks['onRequest'](request, reply);
 
     expect(reply.send).not.toHaveBeenCalled();
+    expect((request as unknown as Record<string, unknown>)['_guardRequest']).toBeDefined();
+    expect((request as unknown as Record<string, unknown>)['_guardStartTime']).toBeTypeOf('number');
   });
 
   it('onRequest sends response when passthrough returns', async () => {
@@ -307,7 +340,19 @@ describe('guardPlugin', () => {
     expect(reply.send).toHaveBeenCalledWith('');
   });
 
-  it('onRequest sends response when pipeline blocks', async () => {
+  it('preValidation runs the pipeline after onRequest has stamped the request', async () => {
+    const { hooks } = await createPlugin();
+    const request = createMockRequest();
+    const reply = createMockReply();
+
+    await hooks['onRequest'](request, reply);
+    await hooks['preValidation'](request, reply);
+
+    expect(mockComponents.pipeline.execute).toHaveBeenCalledTimes(1);
+    expect(reply.send).not.toHaveBeenCalled();
+  });
+
+  it('preValidation sends response when pipeline blocks', async () => {
     const { hooks } = await createPlugin();
     const blockResponse: GuardResponse = {
       statusCode: 403,
@@ -321,8 +366,73 @@ describe('guardPlugin', () => {
     const request = createMockRequest();
     const reply = createMockReply();
     await hooks['onRequest'](request, reply);
+    await hooks['preValidation'](request, reply);
 
     expect(reply.status).toHaveBeenCalledWith(403);
+    expect(reply.send).toHaveBeenCalledWith('blocked');
+  });
+
+  it('preValidation exposes the parsed request body to the engine', async () => {
+    const { hooks } = await createPlugin();
+    const payload = Buffer.from('{"q":"<script>alert(1)</script>"}');
+    const request = createMockRequest({ method: 'POST', body: payload });
+    const reply = createMockReply();
+
+    await hooks['onRequest'](request, reply);
+    await hooks['preValidation'](request, reply);
+
+    expect(mockComponents.pipeline.execute).toHaveBeenCalledTimes(1);
+    const guardReq = (mockComponents.pipeline.execute as ReturnType<typeof vi.fn>).mock.calls[0][0] as FastifyGuardRequest;
+    expect(Buffer.from(await guardReq.body()).toString()).toBe(payload.toString());
+  });
+
+  it('preValidation skips the pipeline when passthrough already answered', async () => {
+    const { hooks } = await createPlugin();
+    const passthroughResponse: GuardResponse = {
+      statusCode: 200,
+      headers: {},
+      setHeader() {},
+      body: null,
+      bodyText: 'ok',
+    };
+    (mockComponents.bypassHandler.handlePassthrough as ReturnType<typeof vi.fn>).mockResolvedValueOnce(passthroughResponse);
+
+    const request = createMockRequest();
+    const reply = createMockReply();
+    await hooks['onRequest'](request, reply);
+    await hooks['preValidation'](request, reply);
+
+    expect(mockComponents.pipeline.execute).not.toHaveBeenCalled();
+  });
+
+  it('preValidation processes usage rules when routeConfig has behaviorRules', async () => {
+    const { hooks } = await createPlugin();
+    const routeConfig = { behaviorRules: [{ type: 'usage' }] };
+    (mockComponents.routeResolver.getRouteConfig as ReturnType<typeof vi.fn>).mockReturnValueOnce(routeConfig);
+
+    const request = createMockRequest();
+    const reply = createMockReply();
+    await hooks['onRequest'](request, reply);
+    await hooks['preValidation'](request, reply);
+
+    expect(mockComponents.behavioralProcessor.processUsageRules).toHaveBeenCalledWith(
+      expect.anything(), '10.0.0.1', routeConfig,
+    );
+  });
+
+  it('preValidation uses unknown when ip is undefined', async () => {
+    const { hooks } = await createPlugin();
+    const routeConfig = { behaviorRules: [{ type: 'usage' }] };
+    (mockComponents.routeResolver.getRouteConfig as ReturnType<typeof vi.fn>).mockReturnValueOnce(routeConfig);
+
+    const request = createMockRequest({ ip: undefined });
+    const reply = createMockReply();
+    await hooks['onRequest'](request, reply);
+    await hooks['preValidation'](request, reply);
+
+    expect(mockComponents.behavioralProcessor.processUsageRules).toHaveBeenCalledWith(
+      expect.anything(), 'unknown', routeConfig,
+    );
   });
 
   it('onRequest redirects when location header present', async () => {
@@ -340,33 +450,25 @@ describe('guardPlugin', () => {
     const reply = createMockReply();
     await hooks['onRequest'](request, reply);
 
-    expect(reply.redirect).toHaveBeenCalledWith('https://example.com');
+    expect(reply.redirect).toHaveBeenCalledWith('https://example.com', 302);
   });
 
-  it('onRequest processes usage rules when routeConfig has behaviorRules', async () => {
+  it('onRequest preserves a 301 redirect status from the engine', async () => {
     const { hooks } = await createPlugin();
-    const routeConfig = { behaviorRules: [{ type: 'usage' }] };
-    (mockComponents.routeResolver.getRouteConfig as ReturnType<typeof vi.fn>).mockReturnValueOnce(routeConfig);
+    const redirectResponse: GuardResponse = {
+      statusCode: 301,
+      headers: { location: 'https://example.com/login' },
+      setHeader() {},
+      body: null,
+      bodyText: null,
+    };
+    (mockComponents.bypassHandler.handlePassthrough as ReturnType<typeof vi.fn>).mockResolvedValueOnce(redirectResponse);
 
     const request = createMockRequest();
     const reply = createMockReply();
     await hooks['onRequest'](request, reply);
 
-    expect(mockComponents.behavioralProcessor.processUsageRules).toHaveBeenCalled();
-  });
-
-  it('onRequest uses unknown when ip is undefined', async () => {
-    const { hooks } = await createPlugin();
-    const routeConfig = { behaviorRules: [{ type: 'usage' }] };
-    (mockComponents.routeResolver.getRouteConfig as ReturnType<typeof vi.fn>).mockReturnValueOnce(routeConfig);
-
-    const request = createMockRequest({ ip: undefined });
-    const reply = createMockReply();
-    await hooks['onRequest'](request, reply);
-
-    expect(mockComponents.behavioralProcessor.processUsageRules).toHaveBeenCalledWith(
-      expect.anything(), 'unknown', routeConfig,
-    );
+    expect(reply.redirect).toHaveBeenCalledWith('https://example.com/login', 301);
   });
 
   it('onSend returns payload when no guard request stored', async () => {
