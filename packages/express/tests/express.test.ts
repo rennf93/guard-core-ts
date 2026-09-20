@@ -78,6 +78,34 @@ describe('ExpressGuardRequest', () => {
     expect(request.headers).toEqual({ 'user-agent': 'Test/1.0' });
   });
 
+  it('joins array-valued headers into a single string', () => {
+    const req = new ExpressGuardRequest(createMockExpressRequest({
+      headers: { 'set-cookie': ['a=1', 'b=2'], 'user-agent': 'Test/1.0' },
+    }));
+    expect(req.headers['set-cookie']).toBe('a=1, b=2');
+  });
+
+  it('drops undefined header values instead of leaking them to the engine', () => {
+    const req = new ExpressGuardRequest(createMockExpressRequest({
+      headers: { 'user-agent': 'Test/1.0', 'x-empty': undefined },
+    }));
+    expect(req.headers).toEqual({ 'user-agent': 'Test/1.0' });
+  });
+
+  it('flattens array and nested query params into strings', () => {
+    const req = new ExpressGuardRequest(createMockExpressRequest({
+      query: { tags: ['a', 'b'], nested: { x: 1 }, flag: 1 },
+    }));
+    expect(req.queryParams).toEqual({ tags: 'a, b', nested: '{"x":1}', flag: '1' });
+  });
+
+  it('drops null and undefined query params', () => {
+    const req = new ExpressGuardRequest(createMockExpressRequest({
+      query: { q: '1', gone: undefined, nulled: null },
+    }));
+    expect(req.queryParams).toEqual({ q: '1' });
+  });
+
   it('returns correct queryParams', () => {
     expect(request.queryParams).toEqual({ q: '1' });
   });
@@ -592,6 +620,124 @@ describe('createSecurityMiddleware full flow', () => {
 
     await new Promise(resolve => setTimeout(resolve, 10));
     expect(next).toHaveBeenCalled();
+  });
+
+  it('forwards middleware errors to next(error) instead of hanging the request (fail secure)', async () => {
+    mockInitialize.mockRejectedValueOnce(new Error('init failed'));
+    const middleware = createSecurityMiddleware({ config: {} });
+    const req = createMockReqForMiddleware();
+    const res = createMockResForMiddleware();
+    const next = vi.fn();
+
+    await middleware(req, res as never, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+    const forwarded = next.mock.calls[0][0] as Error;
+    expect(forwarded).toBeInstanceOf(Error);
+    expect(forwarded.message).toBe('init failed');
+    expect(res.send).not.toHaveBeenCalled();
+    expect(res.end).not.toHaveBeenCalled();
+  });
+
+  it('applies processResponse headers before ending the response', async () => {
+    const middleware = createSecurityMiddleware({ config: {} });
+    const req = createMockReqForMiddleware();
+    const res = createMockResForMiddleware();
+    const next = vi.fn();
+
+    const originalEnd = res.end as ReturnType<typeof vi.fn>;
+    const events: string[] = [];
+    originalEnd.mockImplementation(() => { events.push('end'); });
+
+    await middleware(req, res as never, next);
+
+    (sharedMockComponents.errorResponseFactory.processResponse as ReturnType<typeof vi.fn>).mockImplementationOnce(
+      async (_req: unknown, capturedRes: GuardResponse) => {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        capturedRes.setHeader('x-guard', 'done');
+        events.push('processResponse');
+        return capturedRes;
+      },
+    );
+
+    res.end('response body');
+
+    await vi.waitFor(() => {
+      expect(originalEnd).toHaveBeenCalled();
+    });
+    expect(events).toEqual(['processResponse', 'end']);
+    expect(res._headers['x-guard']).toBe('done');
+  });
+
+  it('still ends the response when processResponse rejects', async () => {
+    const middleware = createSecurityMiddleware({ config: {} });
+    const req = createMockReqForMiddleware();
+    const res = createMockResForMiddleware();
+    const next = vi.fn();
+
+    const originalEnd = res.end as ReturnType<typeof vi.fn>;
+
+    await middleware(req, res as never, next);
+
+    (sharedMockComponents.errorResponseFactory.processResponse as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error('processing failed'),
+    );
+
+    res.end('data');
+
+    await vi.waitFor(() => {
+      expect(originalEnd).toHaveBeenCalledWith('data');
+    });
+  });
+
+  it('captures chunks written via res.write into the response body', async () => {
+    const middleware = createSecurityMiddleware({ config: {} });
+    const req = createMockReqForMiddleware();
+    const res = { ...createMockResForMiddleware(), write: vi.fn().mockReturnValue(true) } as never;
+    const next = vi.fn();
+
+    await middleware(req, res, next);
+
+    let captured: GuardResponse | undefined;
+    (sharedMockComponents.errorResponseFactory.processResponse as ReturnType<typeof vi.fn>).mockImplementationOnce(
+      async (_req: unknown, capturedRes: GuardResponse) => {
+        captured = capturedRes;
+        return capturedRes;
+      },
+    );
+
+    res.write('hello ');
+    res.end('world');
+
+    await vi.waitFor(() => {
+      expect(captured).toBeDefined();
+    });
+    expect(captured?.bodyText).toBe('hello world');
+  });
+
+  it('caps the captured response body at the bounded read limit', async () => {
+    const middleware = createSecurityMiddleware({ config: {} });
+    const req = createMockReqForMiddleware();
+    const res = { ...createMockResForMiddleware(), write: vi.fn().mockReturnValue(true) } as never;
+    const next = vi.fn();
+
+    await middleware(req, res, next);
+
+    let captured: GuardResponse | undefined;
+    (sharedMockComponents.errorResponseFactory.processResponse as ReturnType<typeof vi.fn>).mockImplementationOnce(
+      async (_req: unknown, capturedRes: GuardResponse) => {
+        captured = capturedRes;
+        return capturedRes;
+      },
+    );
+
+    res.write('a'.repeat(50_000));
+    res.end('');
+
+    await vi.waitFor(() => {
+      expect(captured).toBeDefined();
+    });
+    expect(captured?.bodyText?.length).toBe(10_000);
   });
 });
 
