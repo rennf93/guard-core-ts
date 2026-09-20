@@ -204,6 +204,7 @@ describe('createGuardMiddleware', () => {
       header: vi.fn((_name: string, value: string) => { responseHeaders.set(_name, value); }),
       redirect: vi.fn(() => new Response(null, { status: 302 })),
       json: vi.fn((data: unknown, status: unknown) => new Response(JSON.stringify(data), { status: status as number })),
+      body: vi.fn((data: string | null, status: number) => new Response(data ?? '', { status })),
       res: {
         status: 200,
         headers: responseHeaders,
@@ -265,7 +266,7 @@ describe('createGuardMiddleware', () => {
     const { ctx, next } = await invokeMiddleware();
 
     expect(next).not.toHaveBeenCalled();
-    expect(ctx.json).toHaveBeenCalled();
+    expect(ctx.body).toHaveBeenCalled();
   });
 
   it('returns response when security bypass returns', async () => {
@@ -305,7 +306,28 @@ describe('createGuardMiddleware', () => {
     await middleware(ctx2 as never, next2);
 
     expect(next2).not.toHaveBeenCalled();
-    expect(ctx2.json).toHaveBeenCalled();
+    expect(ctx2.body).toHaveBeenCalled();
+  });
+
+  it('sends the engine body without re-wrapping it in a detail envelope', async () => {
+    const { middleware } = await invokeMiddleware();
+
+    const blockResponse: GuardResponse = {
+      statusCode: 403,
+      headers: { 'content-type': 'application/json' },
+      setHeader() {},
+      body: new TextEncoder().encode(JSON.stringify({ detail: 'Blocked' })),
+      bodyText: JSON.stringify({ detail: 'Blocked' }),
+    };
+    (hoistedComponents.pipeline.execute as ReturnType<typeof vi.fn>).mockResolvedValueOnce(blockResponse);
+
+    const ctx2 = createMockContext();
+    const next2 = vi.fn();
+    await middleware(ctx2 as never, next2);
+
+    expect(ctx2.json).not.toHaveBeenCalled();
+    expect((ctx2.body as ReturnType<typeof vi.fn>).mock.calls[0][0]).toBe(JSON.stringify({ detail: 'Blocked' }));
+    expect((ctx2.body as ReturnType<typeof vi.fn>).mock.calls[0][1]).toBe(403);
   });
 
   it('redirects when location header present', async () => {
@@ -403,6 +425,61 @@ describe('createGuardMiddleware', () => {
       (hoistedComponents.errorResponseFactory.processResponse as ReturnType<typeof vi.fn>).mock.calls.length - 1
     ];
     expect(lastCall[4]).toBeUndefined();
+  });
+
+  it('uses the connectingIpResolver option when provided', async () => {
+    const { createGuardMiddleware } = await import('../src/middleware.js');
+    const middleware = createGuardMiddleware({
+      config: {},
+      connectingIpResolver: () => '9.9.9.9',
+    });
+
+    const routeConfig = { behaviorRules: [{ type: 'usage' }] };
+    (hoistedComponents.routeResolver.getRouteConfig as ReturnType<typeof vi.fn>).mockReturnValueOnce(routeConfig);
+
+    const ctx = createMockContext();
+    const next = vi.fn().mockResolvedValue(undefined);
+    await middleware(ctx as never, next);
+
+    expect(hoistedComponents.behavioralProcessor.processUsageRules).toHaveBeenCalledWith(
+      expect.anything(), '9.9.9.9', routeConfig,
+    );
+  });
+
+  it('treats a null resolver result as unknown client ip', async () => {
+    const { createGuardMiddleware } = await import('../src/middleware.js');
+    const middleware = createGuardMiddleware({
+      config: {},
+      connectingIpResolver: () => null,
+    });
+
+    const routeConfig = { behaviorRules: [{ type: 'usage' }] };
+    (hoistedComponents.routeResolver.getRouteConfig as ReturnType<typeof vi.fn>).mockReturnValueOnce(routeConfig);
+
+    const ctx = createMockContext();
+    const next = vi.fn().mockResolvedValue(undefined);
+    await middleware(ctx as never, next);
+
+    expect(hoistedComponents.behavioralProcessor.processUsageRules).toHaveBeenCalledWith(
+      expect.anything(), 'unknown', routeConfig,
+    );
+  });
+
+  it('initializes once under concurrent first requests', async () => {
+    const { createGuardMiddleware } = await import('../src/middleware.js');
+    let releaseInit: ((value: unknown) => void) | undefined;
+    hoistedInit.mockImplementationOnce(
+      () => new Promise((resolve) => { releaseInit = resolve; }),
+    );
+
+    const middleware = createGuardMiddleware({ config: {} });
+    const first = middleware(createMockContext() as never, vi.fn().mockResolvedValue(undefined));
+    const second = middleware(createMockContext() as never, vi.fn().mockResolvedValue(undefined));
+
+    releaseInit!(hoistedComponents);
+    await Promise.all([first, second]);
+
+    expect(hoistedInit).toHaveBeenCalledTimes(1);
   });
 });
 

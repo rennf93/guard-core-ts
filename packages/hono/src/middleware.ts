@@ -1,4 +1,5 @@
 import type { Context, MiddlewareHandler } from 'hono';
+import type { ContentfulStatusCode, RedirectStatusCode } from 'hono/utils/http-status';
 import type {
   SecurityConfig,
   GuardRequest,
@@ -17,6 +18,13 @@ export interface GuardMiddlewareOptions {
   agentHandler?: AgentHandlerProtocol;
   geoIpHandler?: GeoIPHandler;
   guardDecorator?: unknown;
+  /**
+   * Optional hook that returns the connecting peer IP for the request.
+   * Defaults to `c.env['remoteAddr']`; wire this to the runtime's connection
+   * info helper (for example `getConnInfo` from the node-server adapter) when
+   * the runtime does not expose the peer address through the environment.
+   */
+  connectingIpResolver?: (c: Context) => string | null | undefined;
 }
 
 export function createGuardMiddleware(options: GuardMiddlewareOptions): MiddlewareHandler {
@@ -25,20 +33,36 @@ export function createGuardMiddleware(options: GuardMiddlewareOptions): Middlewa
   const responseFactory = new HonoResponseFactory();
 
   let initialized = false;
+  let initPromise: Promise<void> | null = null;
   let components: SecurityMiddlewareComponents;
 
+  function initialize(): Promise<void> {
+    if (initialized) return Promise.resolve();
+    /* Single-flight: concurrent first requests share one initialization. */
+    initPromise ??= initializeSecurityMiddleware(
+      resolved, logger, responseFactory,
+      options.agentHandler, options.geoIpHandler, options.guardDecorator,
+    )
+      .then((initializedComponents) => {
+        components = initializedComponents;
+        initialized = true;
+        logger.info('Guard security middleware initialized');
+      })
+      .catch((error: unknown) => {
+        /* Allow a retry on the next request instead of caching the failure. */
+        initPromise = null;
+        throw error;
+      });
+    return initPromise;
+  }
+
   return async (c: Context, next) => {
-    if (!initialized) {
-      components = await initializeSecurityMiddleware(
-        resolved, logger, responseFactory,
-        options.agentHandler, options.geoIpHandler, options.guardDecorator,
-      );
-      initialized = true;
-      logger.info('Guard security middleware initialized');
-    }
+    await initialize();
 
     const startTime = performance.now();
-    const connectingIp = (c.env as Record<string, unknown> | undefined)?.['remoteAddr'] as string | undefined ?? null;
+    const connectingIp = options.connectingIpResolver
+      ? options.connectingIpResolver(c) ?? null
+      : (c.env as Record<string, unknown> | undefined)?.['remoteAddr'] as string | undefined ?? null;
     const guardReq = new HonoGuardRequest(c.req, connectingIp);
 
     const passthrough = await components.bypassHandler.handlePassthrough(
@@ -69,6 +93,9 @@ export function createGuardMiddleware(options: GuardMiddlewareOptions): Middlewa
       headers: Object.fromEntries(c.res.headers.entries()),
       setHeader(name: string, value: string) { c.res.headers.set(name, value); },
       body: null,
+      /* Spec 1.4: without a bounded response-body reader, body-based behavioral
+         return patterns are skipped. The response may be a live stream, so the
+         body is deliberately not read here. */
       bodyText: null,
     };
 
@@ -87,13 +114,12 @@ function sendHonoResponse(c: Context, response: GuardResponse): Response {
   }
 
   if (response.headers['location']) {
-    return c.redirect(response.headers['location'], response.statusCode as 301 | 302);
+    return c.redirect(response.headers['location'], response.statusCode as RedirectStatusCode);
   }
 
-  return c.json(
-    { detail: response.bodyText },
-    response.statusCode as Parameters<typeof c.json>[1],
-  );
+  /* The engine's response factory already encoded the final body; sending it
+     through c.json would wrap it in a second {detail: ...} envelope. */
+  return c.body(response.bodyText ?? '', response.statusCode as ContentfulStatusCode);
 }
 
 function createPassthroughResponse(): GuardResponse {
