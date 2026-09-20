@@ -14,3 +14,10 @@ updates:
         dependency-type: production
       development:
         dependency-type: development
+    ignore:
+      # tsup 8.5.1 inlines rollup-plugin-dts 6.1.1, whose dts pipeline needs the
+      # legacy TypeScript JS compiler API (ts.sys) that only exists in 5.x.
+      # typescript 6.x/7.x break `pnpm build`; revisit when tsup ships a
+      # TS7-compatible dts pipeline.
+      - dependency-name: typescript
+        versions: [">=6"]
