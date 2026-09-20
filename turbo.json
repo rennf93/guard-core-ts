@@ -1,5 +1,6 @@
 {
   "$schema": "https://turbo.build/schema.json",
+  "globalDependencies": ["conformance/**"],
   "tasks": {
     "build": {
       "dependsOn": ["^build"],

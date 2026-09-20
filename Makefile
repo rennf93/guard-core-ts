@@ -1,4 +1,4 @@
-.PHONY: install build clean test test-all test-coverage lint typecheck \
+.PHONY: install build clean test test-all test-coverage conformance conformance-update lint typecheck \
        build-core build-express build-fastify build-nestjs build-hono \
        bump-version prune stop restart serve-docs build-docs
 
@@ -19,6 +19,12 @@ test-all:
 
 test-coverage:
 	cd packages/core && npx vitest run --coverage
+
+conformance:
+	cd packages/core && npx vitest run tests/conformance
+
+conformance-update:
+	cd packages/core && GUARD_CONFORMANCE_UPDATE_BASELINE=1 npx vitest run tests/conformance
 
 lint:
 	pnpm lint
