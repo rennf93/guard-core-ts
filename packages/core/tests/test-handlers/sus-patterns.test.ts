@@ -75,8 +75,11 @@ describe('SusPatternsManager', () => {
   });
 
   describe('pattern management', () => {
-    it('getDefaultPatterns returns 75 patterns', () => {
-      expect(manager.getDefaultPatterns().length).toBe(75);
+    it('getDefaultPatterns returns the canonical 157-pattern table', () => {
+      // Spec 4.0.2: the legacy 75-entry regex table was replaced by the
+      // canonical pattern table (guard_core/handlers/_suspatterns_pattern_table.py),
+      // which holds 157 pattern definitions; the TS table is generated from it.
+      expect(manager.getDefaultPatterns().length).toBe(157);
     });
 
     it('getCustomPatterns starts empty', () => {
@@ -86,7 +89,7 @@ describe('SusPatternsManager', () => {
     it('addPattern adds a custom pattern', async () => {
       await manager.addPattern('custom-test-pattern');
       expect(manager.getCustomPatterns()).toContain('custom-test-pattern');
-      expect(manager.getAllPatterns().length).toBe(76);
+      expect(manager.getAllPatterns().length).toBe(158);
     });
 
     it('removePattern removes a custom pattern', async () => {
@@ -98,7 +101,7 @@ describe('SusPatternsManager', () => {
     it('getAllPatterns includes default + custom', async () => {
       await manager.addPattern('custom-1');
       const all = manager.getAllPatterns();
-      expect(all.length).toBe(76);
+      expect(all.length).toBe(158);
     });
   });
 
@@ -199,7 +202,15 @@ describe('SusPatternsManager', () => {
 
     const result = await manager.detect('custom-danger-123', '1.2.3.4');
     expect(result.isThreat).toBe(true);
-    expect(result.threats.some((t) => t.detectionMethod === 'regex_custom')).toBe(true);
+    // Spec 4.0.2: every regex hit is reported with detection method 'regex'
+    // (guard_core/handlers/_suspatterns_regex.py _build_regex_threat); custom
+    // patterns go through the same path with category 'custom'. The legacy
+    // 'regex_custom' method no longer exists, and the verdict is the weighted
+    // threat_score check (anomaly >= detection_threat_score_threshold).
+    expect(result.threatScore).toBeGreaterThanOrEqual(1.0);
+    expect(
+      result.threats.some((t) => t.pattern === 'custom-danger-\\d+' && t.detectionMethod === 'regex'),
+    ).toBe(true);
   });
 
   it('handles regex timeout gracefully', async () => {
@@ -286,10 +297,15 @@ describe('SusPatternsManager semantic threshold trigger', () => {
     expect(semanticThreats.length).toBeGreaterThan(0);
   });
 
-  it('handles custom pattern that throws', async () => {
+  it('rejects an invalid custom pattern at add time', async () => {
     const manager = new SusPatternsManager(createTestConfig(), defaultLogger);
     await manager.addPattern('[invalid-regex', false);
+    // Spec 4.0.2: reference add_pattern validates pattern safety before
+    // registering (suspatterns registry add_pattern -> validate_pattern_safety)
+    // and refuses unsafe or uncompilable patterns with a warning, so detect()
+    // never sees an invalid regex.
+    expect(manager.getCustomPatterns()).not.toContain('[invalid-regex');
     const result = await manager.detect('test content', '1.2.3.4', 'unknown');
-    expect(result.timeouts.length).toBeGreaterThanOrEqual(0);
+    expect(result.timeouts.length).toBe(0);
   });
 });
