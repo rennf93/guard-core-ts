@@ -456,6 +456,17 @@ export class SusPatternsManager {
   }
 
   async addPattern(pattern: string, custom = true): Promise<void> {
+    // Reference add_pattern (suspatterns registry) runs
+    // compiler.validate_pattern_safety first and refuses unsafe or
+    // uncompilable patterns with a warning; rejected patterns never join the
+    // scan set, so detect() cannot hit an invalid regex at scan time.
+    if (this.compiler !== null) {
+      const [isSafe, reason] = this.compiler.validatePatternSafety(pattern);
+      if (!isSafe) {
+        this.logger.warn(`Rejected unsafe pattern (${reason}): ${pattern}`);
+        return;
+      }
+    }
     this.customPatterns.add(pattern);
     if (custom && this.redisHandler) {
       await this.redisHandler.setKey('patterns', 'custom', [...this.customPatterns].join(','));
