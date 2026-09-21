@@ -1,109 +1,65 @@
+/**
+ * SusPatternsManager ported from guard_core/handlers/suspatterns_handler.py
+ * (spec 4.0.2): multi-view detection (processed, raw, URL-decoded,
+ * short-base64 additive), the canonical pattern table with structural
+ * matchers, weighted anomaly scoring against detection_threat_score_threshold,
+ * and the semantic emission path.
+ */
+
 import type { ResolvedSecurityConfig } from '../models/config.js';
 import type { Logger } from '../models/logger.js';
 import { ContentPreprocessor } from '../detection-engine/preprocessor.js';
 import { PatternCompiler } from '../detection-engine/compiler.js';
 import { PerformanceMonitor } from '../detection-engine/monitor.js';
 import { SemanticAnalyzer } from '../detection-engine/semantic.js';
+import type { SemanticAnalysis } from '../detection-engine/semantic.js';
+import {
+  compilePythonPattern,
+  findall,
+} from '../detection-engine/regex-compat.js';
+import type { CompiledPythonPattern } from '../detection-engine/regex-compat.js';
+import { buildBinaryPrefix, looksLikeBinaryContent } from '../detection-engine/binary.js';
+import {
+  buildRegexThreat,
+  getCompiledPatterns,
+  firstAcceptedRegexThreat,
+  iterScanWindowMatches,
+  resolvePatternWeight,
+  scanMatcherFor,
+  scanWindowBoundsFor,
+  windowedFinderFor,
+} from '../detection-engine/patterns/index.js';
+import type { CompiledTableEntry } from '../detection-engine/patterns/index.js';
+import {
+  DETECTION_RAW_VIEW_PATTERN_SOURCES,
+  DETECTION_URL_DECODED_VIEW_PATTERN_SOURCES,
+} from '../detection-engine/patterns/pattern-table.js';
+import { _PATH_TRAVERSAL_DECODED_SHAPE_RE } from '../detection-engine/patterns/sources.js';
 import type { AgentHandlerProtocol } from '../protocols/agent.js';
 import type { RedisManager } from './redis.js';
 
-const CTX_XSS: ReadonlySet<string> = new Set(['query_param', 'header', 'request_body', 'unknown']);
-const CTX_SQLI: ReadonlySet<string> = new Set(['query_param', 'request_body', 'unknown']);
-const CTX_DIR_TRAVERSAL: ReadonlySet<string> = new Set(['url_path', 'query_param', 'request_body', 'unknown']);
-const CTX_CMD_INJECTION: ReadonlySet<string> = new Set(['query_param', 'request_body', 'unknown']);
-const CTX_FILE_INCLUSION: ReadonlySet<string> = new Set(['url_path', 'query_param', 'request_body', 'unknown']);
-const CTX_LDAP: ReadonlySet<string> = new Set(['query_param', 'request_body', 'unknown']);
-const CTX_XML: ReadonlySet<string> = new Set(['header', 'request_body', 'unknown']);
-const CTX_SSRF: ReadonlySet<string> = new Set(['query_param', 'request_body', 'unknown']);
-const CTX_NOSQL: ReadonlySet<string> = new Set(['query_param', 'request_body', 'unknown']);
-const CTX_FILE_UPLOAD: ReadonlySet<string> = new Set(['header', 'request_body', 'unknown']);
-const CTX_PATH_TRAVERSAL: ReadonlySet<string> = new Set(['url_path', 'query_param', 'request_body', 'unknown']);
-const CTX_TEMPLATE: ReadonlySet<string> = new Set(['query_param', 'request_body', 'unknown']);
-const CTX_HTTP_SPLIT: ReadonlySet<string> = new Set(['header', 'query_param', 'request_body', 'unknown']);
-const CTX_SENSITIVE_FILE: ReadonlySet<string> = new Set(['url_path', 'request_body', 'unknown']);
-const CTX_CMS_PROBING: ReadonlySet<string> = new Set(['url_path', 'request_body', 'unknown']);
-const CTX_RECON: ReadonlySet<string> = new Set(['url_path', 'unknown']);
-const CTX_ALL: ReadonlySet<string> = new Set(['query_param', 'header', 'url_path', 'request_body', 'unknown']);
+const CTX_ALL: ReadonlySet<string> = new Set([
+  'query_param',
+  'header',
+  'url_path',
+  'request_body',
+  'unknown',
+]);
 
 const KNOWN_CONTEXTS = new Set(['query_param', 'header', 'url_path', 'request_body', 'unknown']);
 
-const PATTERN_DEFINITIONS: Array<[string, ReadonlySet<string>]> = [
-  [String.raw`<script[^>]*>[^<]*<\/script\s*>`, CTX_XSS],
-  [String.raw`javascript:\s*[^\s]+`, CTX_XSS],
-  [String.raw`(?:on(?:error|load|click|mouseover|submit|mouse|unload|change|focus|blur|drag))=(?:["'][^"']*["']|[^\s>]+)`, CTX_XSS],
-  [String.raw`(?:<[^>]+\s+(?:href|src|data|action)\s*=[\s"']*(?:javascript|vbscript|data):)`, CTX_XSS],
-  [String.raw`(?:<[^>]+style\s*=[\s"']*[^>"']*(?:expression|behavior|url)\s*\([^)]*\))`, CTX_XSS],
-  [String.raw`(?:<object[^>]*>[\s\S]*<\/object\s*>)`, CTX_XSS],
-  [String.raw`(?:<embed[^>]*>[\s\S]*<\/embed\s*>)`, CTX_XSS],
-  [String.raw`(?:<applet[^>]*>[\s\S]*<\/applet\s*>)`, CTX_XSS],
-  [String.raw`SELECT\s+[\w\s,*]+\s+FROM\s+[\w\s._]+`, CTX_SQLI],
-  [String.raw`UNION\s+(?:ALL\s+)?SELECT`, CTX_SQLI],
-  [String.raw`('\s*(?:OR|AND)\s*[(\s]*'?[\d\w]+\s*(?:=|LIKE|<|>|<=|>=)\s*[(\s]*'?[\d\w]+)`, CTX_SQLI],
-  [String.raw`(UNION\s+(?:ALL\s+)?SELECT\s+(?:NULL[,\s]*)+|\(\s*SELECT\s+(?:@@|VERSION))`, CTX_SQLI],
-  [String.raw`(?:INTO\s+(?:OUTFILE|DUMPFILE)\s+'[^']+')`, CTX_SQLI],
-  [String.raw`(?:LOAD_FILE\s*\([^)]+\))`, CTX_SQLI],
-  [String.raw`(?:BENCHMARK\s*\(\s*\d+\s*,)`, CTX_SQLI],
-  [String.raw`(?:SLEEP\s*\(\s*\d+\s*\))`, CTX_SQLI],
-  [String.raw`(?:\/\*![0-9]*\s*(?:OR|AND|UNION|SELECT|INSERT|DELETE|DROP|CONCAT|CHAR|UPDATE)\b)`, CTX_SQLI],
-  [String.raw`(?:\.\.\/|\.\.\\)(?:\.\.\/|\.\.\\)+`, CTX_DIR_TRAVERSAL],
-  [String.raw`(?:/etc/(?:passwd|shadow|group|hosts|motd|issue|mysql/my.cnf|ssh/ssh_config)$)`, CTX_DIR_TRAVERSAL],
-  [String.raw`(?:boot\.ini|win\.ini|system\.ini|config\.sys)\s*$`, CTX_DIR_TRAVERSAL],
-  [String.raw`(?:\/proc\/self\/environ$)`, CTX_DIR_TRAVERSAL],
-  [String.raw`(?:\/var\/log\/[^/]+$)`, CTX_DIR_TRAVERSAL],
-  [String.raw`;\s*(?:ls|cat|rm|chmod|chown|wget|curl|nc|netcat|ping|telnet)\s+-[a-zA-Z]+\s+`, CTX_CMD_INJECTION],
-  [String.raw`\|\s*(?:wget|curl|fetch|lwp-download|lynx|links|GET)\s+`, CTX_CMD_INJECTION],
-  [String.raw`(?:[;&|` + '`' + String.raw`]\s*(?:\$\([^)]+\)|\$\{[^}]+\}))`, CTX_CMD_INJECTION],
-  [String.raw`(?:^|;)\s*(?:bash|sh|ksh|csh|tsch|zsh|ash)\s+-[a-zA-Z]+`, CTX_CMD_INJECTION],
-  [String.raw`\b(?:eval|system|exec|shell_exec|passthru|popen|proc_open)\s*\(`, CTX_CMD_INJECTION],
-  [String.raw`(?:php|data|zip|rar|file|glob|expect|input|phpinfo|zlib|phar|ssh2|rar|ogg|expect)://[^\s]+`, CTX_FILE_INCLUSION],
-  [String.raw`(?:\/\/[0-9a-zA-Z]([-.\w]*[0-9a-zA-Z])*(:[0-9]+)?(?:\/?)?(?:[a-zA-Z0-9\-.,?'/\\+&amp;%$#_]*)?)`, CTX_FILE_INCLUSION],
-  [String.raw`\(\s*[|&]\s*\(\s*[^)]+=[*]`, CTX_LDAP],
-  [String.raw`(?:\*(?:[\s\d\w]+\s*=|=\s*[\d\w\s]+))`, CTX_LDAP],
-  [String.raw`(?:\(\s*[&|]\s*)`, CTX_LDAP],
-  [String.raw`<!(?:ENTITY|DOCTYPE)[^>]+SYSTEM[^>]+>`, CTX_XML],
-  [String.raw`(?:<!\[CDATA\[.*?\]\]>)`, CTX_XML],
-  [String.raw`(?:<\?xml.*?\?>)`, CTX_XML],
-  [String.raw`(?:^|\s|/)(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::(?:\d*)\]|(?:169\.254|192\.168|10\.|172\.(?:1[6-9]|2[0-9]|3[01]))\.\d+)(?:\s|$|/)`, CTX_SSRF],
-  [String.raw`(?:file|dict|gopher|jar|tftp)://[^\s]+`, CTX_SSRF],
-  [String.raw`\{\s*\$(?:where|gt|lt|ne|eq|regex|in|nin|all|size|exists|type|mod|options):`, CTX_NOSQL],
-  [String.raw`(?:\{\s*\$[a-zA-Z]+\s*:\s*(?:\{|\[))`, CTX_NOSQL],
-  [String.raw`filename=["'].*?\.(?:php\d*|phar|phtml|exe|jsp|asp|aspx|sh|bash|rb|py|pl|cgi|com|bat|cmd|vbs|vbe|js|ws|wsf|msi|hta)["']`, CTX_FILE_UPLOAD],
-  [String.raw`(?:%2e%2e|%252e%252e|%uff0e%uff0e|%c0%ae%c0%ae|%e0%40%ae|%c0%ae%e0%80%ae|%25c0%25ae)/`, CTX_PATH_TRAVERSAL],
-  [String.raw`\{\{\s*[^}]+(?:system|exec|popen|eval|require|include)\s*\}\}`, CTX_TEMPLATE],
-  [String.raw`\{%\s*[^%]+(?:system|exec|popen|eval|require|include)\s*%\}`, CTX_TEMPLATE],
-  [String.raw`[\r\n]\s*(?:HTTP\/[0-9.]+|Location:|Set-Cookie:)`, CTX_HTTP_SPLIT],
-  [String.raw`(?:^|/)\.env(?:\.\w+)?(?:\?|$|/)`, CTX_SENSITIVE_FILE],
-  [String.raw`(?:^|/)[\w-]*config[\w-]*\.(?:env|yml|yaml|json|toml|ini|xml|conf)(?:\?|$)`, CTX_SENSITIVE_FILE],
-  [String.raw`(?:^|/)[\w./-]*\.map(?:\?|$)`, CTX_SENSITIVE_FILE],
-  [String.raw`(?:^|/)[\w./-]*\.(?:ts|tsx|jsx|py|rb|java|go|rs|php|pl|sh|sql)(?:\?|$)`, CTX_SENSITIVE_FILE],
-  [String.raw`(?:^|/)\.(?:git|svn|hg|bzr)(?:/|$)`, CTX_SENSITIVE_FILE],
-  [String.raw`(?:^|/)(?:wp-(?:admin|login|content|includes|config)|administrator|xmlrpc)\.?(?:php)?(?:/|$|\?)`, CTX_CMS_PROBING],
-  [String.raw`(?:^|/)(?:phpinfo|info|test|php_info)\.php(?:\?|$)`, CTX_CMS_PROBING],
-  [String.raw`(?:^|/)[\w./-]*\.(?:bak|backup|old|orig|save|swp|swo|tmp|temp)(?:\?|$)`, CTX_CMS_PROBING],
-  [String.raw`(?:^|/)(?:\.htaccess|\.htpasswd|\.DS_Store|Thumbs\.db|\.npmrc|\.dockerenv|web\.config)(?:\?|$)`, CTX_CMS_PROBING],
-  [String.raw`(?:^|/)[\w./-]*\.(?:asp|aspx|jsp|jsa|jhtml|shtml|cfm|cgi|do|action|lua|inc|woa|nsf|esp|html?|js|css|properties|png|gif|jpg|jpeg|svg|webp|bmp|pl)(?:\?|$)`, CTX_RECON],
-  [String.raw`^/(?:api|rest|v\d+|management|system|version|status|config|config_dump|credentials)(?:/|$|\?)`, CTX_RECON],
-  [String.raw`^/admin(?:istrator)?(?:[./?\-]|$)`, CTX_RECON],
-  [String.raw`^/(?:login|logon|signin)(?:[./?\-]|$|/)`, CTX_RECON],
-  [String.raw`(?:^|/)account/login(?:\?|$|/)`, CTX_RECON],
-  [String.raw`(?:^|/)(?:actuator|server-status|telescope)(?:/|$|\?)`, CTX_RECON],
-  [String.raw`(?:CSCOE|dana-(?:na|cached)|sslvpn|RDWeb|/owa/|/ecp/|global-protect|ssl-vpn/|svpn/|sonicui|/remote/login|myvpn|vpntunnel|versa/login)`, CTX_RECON],
-  [String.raw`(?:^|/)(?:geoserver|confluence|nifi|ScadaBR|pandora_console|centreon|kylin|decisioncenter|evox|MagicInfo|metasys|officescan|helpdesk|ignite)(?:/|$|\?|\.|\-)`, CTX_RECON],
-  [String.raw`(?:^|/)cgi-(?:bin|mod)/`, CTX_RECON],
-  [String.raw`(?:^|/)(?:HNAP1|IPCamDesc\.xml|SDK/webLanguage)(?:\?|$|/)`, CTX_RECON],
-  [String.raw`^/(?:scripts|language|languages|images|css|img)/`, CTX_RECON],
-  [String.raw`(?:^|/)(?:robots\.txt|sitemap\.xml|security\.txt|readme\.txt|README\.md|CHANGELOG|pom\.xml|build\.gradle|appsettings\.json|crossdomain\.xml)(?:\?|$|\.)`, CTX_RECON],
-  [String.raw`(?:^|/)(?:sap|ise|nidp|cslu|rustfs|developmentserver|fog/management|lms/db|json/login_session|sms_mp|plugin/webs_model|wsman|am_bin)(?:/|$|\?)`, CTX_RECON],
-  [String.raw`(?:nmaplowercheck|nice\s+ports|Trinity\.txt)`, CTX_RECON],
-  [String.raw`(?:^|/)\.(?:openclaw|clawdbot)(?:/|$)`, CTX_RECON],
-  [String.raw`^/(?:default|inicio|indice|localstart)(?:\.|/|$|\?)`, CTX_RECON],
-  [String.raw`(?:^|/)(?:\.streamlit|\.gpt-pilot|\.aider|\.cursor|\.windsurf|\.copilot|\.devcontainer)(?:/|$)`, CTX_RECON],
-  [String.raw`(?:^|/)(?:docker-compose|Dockerfile|Makefile|Vagrantfile|Jenkinsfile|Procfile)(?:\.ya?ml)?(?:\?|$)`, CTX_RECON],
-  [String.raw`(?:^|/)[\w./-]*(?:secrets?|credentials?)\.(?:py|json|yml|yaml|toml|txt|env|xml|conf|cfg)(?:\?|$)`, CTX_RECON],
-  [String.raw`(?:^|/)autodiscover/`, CTX_RECON],
-  [String.raw`^/dns-query(?:\?|$)`, CTX_RECON],
-  [String.raw`(?:^|/)\.git/(?:refs|index|HEAD|objects|logs)(?:/|$)`, CTX_RECON],
-];
+const PATH_TRAVERSAL_DECODED_SHAPE = compilePythonPattern(_PATH_TRAVERSAL_DECODED_SHAPE_RE);
+
+const DECODE_BUDGET_EXHAUSTED_PATTERN = 'decode_budget_exhausted';
+
+const SEMANTIC_ATTACK_TYPE_TO_CATEGORY: Readonly<Record<string, string>> = {
+  xss: 'xss',
+  sql: 'sqli',
+  command: 'cmd_injection',
+  path: 'path_traversal',
+  template: 'template',
+  suspicious: 'custom',
+};
 
 export interface DetectionResult {
   isThreat: boolean;
@@ -121,23 +77,62 @@ export interface DetectionResult {
   processedLength: number;
 }
 
+interface InternalRegexThreat {
+  type: string;
+  pattern: string;
+  match: string;
+  position: number;
+  category: string;
+  weight: number;
+}
+
+interface InternalSemanticThreat {
+  type: 'semantic';
+  attack_type: string;
+  probability?: number;
+  threat_score?: number;
+}
+
+/**
+ * Python `_sanitize_for_reporting`: lone surrogates (surrogateescape
+ * artifacts) render as backslash escapes instead of surviving raw.
+ */
+function sanitizeForReporting(value: string): string {
+  let result = '';
+  for (const ch of value) {
+    const code = ch.codePointAt(0) ?? 0;
+    if (code >= 0xdc80 && code <= 0xdcff) {
+      result += `\\x${(code - 0xdc80 + 0x80).toString(16).padStart(2, '0')}`;
+    } else if (code >= 0xd800 && code <= 0xdfff) {
+      result += `\\u${code.toString(16).padStart(4, '0')}`;
+    } else {
+      result += ch;
+    }
+  }
+  return result;
+}
+
 export class SusPatternsManager {
-  private compiler: PatternCompiler;
   private preprocessor: ContentPreprocessor;
   private semantic: SemanticAnalyzer;
   private monitor: PerformanceMonitor;
+  private compiler: PatternCompiler | null;
   private customPatterns = new Set<string>();
-  private compiledCustomContexts = new Map<string, ReadonlySet<string>>();
   private redisHandler: RedisManager | null = null;
   private agentHandler: AgentHandlerProtocol | null = null;
   private semanticThreshold: number;
+  private threatScoreThreshold: number;
 
   constructor(
     config: ResolvedSecurityConfig,
     private readonly logger: Logger,
   ) {
     this.compiler = new PatternCompiler(config.detectionCompilerTimeout * 1000, config.detectionMaxTrackedPatterns);
-    this.preprocessor = new ContentPreprocessor(config.detectionMaxContentLength, config.detectionPreserveAttackPatterns);
+    this.preprocessor = new ContentPreprocessor(
+      config.detectionMaxContentLength,
+      config.detectionPreserveAttackPatterns,
+      config.detectionMaxBodyInspectBytes,
+    );
     this.semantic = new SemanticAnalyzer();
     this.monitor = new PerformanceMonitor(
       config.detectionAnomalyThreshold,
@@ -146,6 +141,7 @@ export class SusPatternsManager {
       config.detectionMaxTrackedPatterns,
     );
     this.semanticThreshold = config.detectionSemanticThreshold;
+    this.threatScoreThreshold = config.detectionThreatScoreThreshold;
   }
 
   async initializeRedis(redisHandler: RedisManager): Promise<void> {
@@ -155,7 +151,6 @@ export class SusPatternsManager {
       for (const p of cached.split(',')) {
         if (p.trim()) {
           this.customPatterns.add(p.trim());
-          this.compiledCustomContexts.set(p.trim(), CTX_ALL);
         }
       }
     }
@@ -167,8 +162,188 @@ export class SusPatternsManager {
 
   private normalizeContext(context: string): string {
     const parts = context.split(':');
-    const normalized = parts[0].toLowerCase();
+    const normalized = parts[0]?.toLowerCase() ?? 'unknown';
     return KNOWN_CONTEXTS.has(normalized) ? normalized : 'unknown';
+  }
+
+  private static excludedFromView(
+    source: string,
+    rawViewOnly: boolean | null,
+    urlDecodedViewOnly: boolean | null,
+  ): boolean {
+    const isRawViewPattern = DETECTION_RAW_VIEW_PATTERN_SOURCES.has(source);
+    const isUrlDecodedViewPattern = DETECTION_URL_DECODED_VIEW_PATTERN_SOURCES.has(source);
+    if (rawViewOnly === true) return isUrlDecodedViewPattern || !isRawViewPattern;
+    if (urlDecodedViewOnly === true) return isRawViewPattern || !isUrlDecodedViewPattern;
+    if (rawViewOnly === false) return isRawViewPattern || isUrlDecodedViewPattern;
+    return false;
+  }
+
+  private async checkRegexPatterns(
+    content: string,
+    context: string,
+    correlationId: string | null,
+    options: { rawViewOnly?: boolean | null; urlDecodedViewOnly?: boolean | null } = {},
+  ): Promise<{ threats: InternalRegexThreat[]; matchedPatterns: string[]; timeouts: string[] }> {
+    const { rawViewOnly = null, urlDecodedViewOnly = null } = options;
+    const threats: InternalRegexThreat[] = [];
+    const matchedPatterns: string[] = [];
+    const timeouts: string[] = [];
+
+    const normalized = this.normalizeContext(context);
+    const validatorContext = context.endsWith(':embedded_json') ? `${normalized}:embedded_json` : normalized;
+    const skipFilter = normalized === 'unknown' || normalized === 'request_body';
+    const binaryPrefix = buildBinaryPrefix(content);
+
+    const allPatterns: Array<{
+      source: string;
+      compiled: CompiledPythonPattern;
+      contexts: ReadonlySet<string>;
+      category: string;
+      custom: boolean;
+    }> = getCompiledPatterns().map((entry: CompiledTableEntry) => ({
+      source: entry.source,
+      compiled: entry.re,
+      contexts: entry.contexts,
+      category: entry.category,
+      custom: false,
+    }));
+    for (const customSource of this.customPatterns) {
+      allPatterns.push({
+        source: customSource,
+        compiled: compilePythonPattern(customSource, true),
+        contexts: CTX_ALL,
+        category: 'custom',
+        custom: true,
+      });
+    }
+
+    for (const pattern of allPatterns) {
+      if (SusPatternsManager.excludedFromView(pattern.source, rawViewOnly, urlDecodedViewOnly)) continue;
+      if (!skipFilter && !pattern.contexts.has(normalized)) continue;
+
+      const patternStart = performance.now();
+      const threat = await this.checkRegexPattern(pattern, content, pattern.category, validatorContext, binaryPrefix);
+      const elapsed = (performance.now() - patternStart) / 1000;
+      await this.monitor.recordMetric(
+        pattern.source,
+        elapsed,
+        content.length,
+        threat !== null,
+        false,
+        this.agentHandler,
+        correlationId,
+      );
+      if (threat !== null) {
+        threats.push(threat);
+        matchedPatterns.push(pattern.source);
+      }
+    }
+
+    return { threats, matchedPatterns, timeouts };
+  }
+
+  private async checkRegexPattern(
+    pattern: { source: string; compiled: CompiledPythonPattern; category: string; custom: boolean },
+    content: string,
+    category: string,
+    context: string,
+    binaryPrefix: number[],
+  ): Promise<InternalRegexThreat | null> {
+    const windowedFinder = windowedFinderFor(pattern.source);
+    if (windowedFinder !== undefined) {
+      return firstAcceptedRegexThreat(windowedFinder(content), pattern.compiled, category, context, binaryPrefix);
+    }
+
+    const scanMatcher = scanMatcherFor(pattern.source);
+    if (scanMatcher !== undefined) {
+      return firstAcceptedRegexThreat(scanMatcher(content, pattern.compiled), pattern.compiled, category, context, binaryPrefix);
+    }
+
+    const bounds = scanWindowBoundsFor(pattern.source);
+    if (bounds !== undefined) {
+      const matches = iterScanWindowMatches(content, pattern.compiled, bounds);
+      return firstAcceptedRegexThreat(matches, pattern.compiled, category, context, binaryPrefix);
+    }
+
+    // Plain full-content search with per-candidate validation: the first
+    // candidate that passes its rejection validator (and the binary-density
+    // gate for noise-prone patterns) wins, like the reference's
+    // _check_regex_pattern_with_retry.
+    const flags = pattern.custom
+      ? pattern.compiled.re.flags.replace('y', 'gm')
+      : pattern.compiled.re.flags.replace('y', 'g');
+    const global = new RegExp(pattern.compiled.re.source, flags);
+    global.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = global.exec(content)) !== null) {
+      const threat = buildRegexThreat(pattern.compiled, match, category, context, binaryPrefix);
+      if (threat !== null) return threat;
+      if (match[0].length === 0) global.lastIndex++;
+    }
+    return null;
+  }
+
+  private checkDecodedViewPathTraversal(
+    processedContent: string,
+    rawViewContent: string,
+  ): InternalRegexThreat | null {
+    const decodedMatches = findall(PATH_TRAVERSAL_DECODED_SHAPE, processedContent);
+    const rawCount = findall(PATH_TRAVERSAL_DECODED_SHAPE, rawViewContent).length;
+    if (decodedMatches.length <= rawCount) return null;
+    const match = decodedMatches[0] as RegExpExecArray;
+    return {
+      type: 'regex',
+      pattern: _PATH_TRAVERSAL_DECODED_SHAPE_RE,
+      match: sanitizeForReporting(match[0]),
+      position: match.index,
+      category: 'path_traversal',
+      weight: resolvePatternWeight(_PATH_TRAVERSAL_DECODED_SHAPE_RE, 'path_traversal'),
+    };
+  }
+
+  private checkSemanticThreats(
+    processedContent: string,
+    rawContent: string,
+  ): { threats: InternalSemanticThreat[]; semanticScore: number } {
+    if (looksLikeBinaryContent(rawContent)) {
+      return { threats: [], semanticScore: 0.0 };
+    }
+
+    const semanticBudget = this.preprocessor.maxContentLength;
+    const content = processedContent.slice(0, semanticBudget);
+    const semanticAnalysis: SemanticAnalysis = this.semantic.analyze(content);
+    const semanticScore = this.semantic.getThreatScore(semanticAnalysis);
+    const threats: InternalSemanticThreat[] = [];
+
+    if (semanticScore > this.semanticThreshold) {
+      const attackProbs = semanticAnalysis.attackProbabilities;
+      for (const [attackType, probability] of Object.entries(attackProbs)) {
+        if (probability >= this.semanticThreshold) {
+          threats.push({ type: 'semantic', attack_type: attackType, probability });
+        }
+      }
+      if (threats.length === 0 && semanticScore >= this.semanticThreshold) {
+        threats.push({ type: 'semantic', attack_type: 'suspicious', threat_score: semanticScore });
+      }
+    }
+
+    return { threats, semanticScore };
+  }
+
+  private static regexAnomaly(regexThreats: InternalRegexThreat[]): number {
+    return regexThreats.reduce((sum, threat) => sum + (threat.weight ?? 1.0), 0);
+  }
+
+  private static calculateThreatScore(
+    regexThreats: InternalRegexThreat[],
+    semanticThreats: InternalSemanticThreat[],
+  ): number {
+    if (regexThreats.length === 0 && semanticThreats.length === 0) return 0.0;
+    const anomaly = SusPatternsManager.regexAnomaly(regexThreats);
+    const semanticScores = semanticThreats.map((threat) => threat.probability ?? threat.threat_score ?? 0.0);
+    const semanticMax = semanticScores.length > 0 ? Math.max(...semanticScores) : 0.0;
+    return Math.min(Math.max(anomaly, semanticMax), 1.0);
   }
 
   async detect(
@@ -180,90 +355,86 @@ export class SusPatternsManager {
     const startTime = performance.now();
     const originalLength = content.length;
 
-    const processed = await this.preprocessor.preprocess(content);
+    const decodeBudgetExhausted = { value: false };
+    const [processedContent, decodedContent] = await this.preprocessor.preprocessWithDecoded(
+      content,
+      decodeBudgetExhausted,
+    );
     const normalizedCtx = this.normalizeContext(context);
 
-    const threats: DetectionResult['threats'] = [];
-    const timeouts: string[] = [];
+    const mainPass = await this.checkRegexPatterns(processedContent, context, correlationId, { rawViewOnly: false });
+    const rawViewContent = this.preprocessor.preprocessSignalPreserving(content);
+    const rawPass = await this.checkRegexPatterns(rawViewContent, context, correlationId, { rawViewOnly: true });
 
-    for (const [pattern, contexts] of PATTERN_DEFINITIONS) {
-      if (!contexts.has(normalizedCtx)) continue;
+    const regexThreats = [...mainPass.threats, ...rawPass.threats];
+    const matchedPatterns = [...mainPass.matchedPatterns, ...rawPass.matchedPatterns];
 
-      const patternStart = performance.now();
-      try {
-        const match = await this.compiler.safeMatch(pattern, processed);
-        const elapsed = (performance.now() - patternStart) / 1000;
-
-        await this.monitor.recordMetric(pattern, elapsed, processed.length, match !== null, false, this.agentHandler, correlationId);
-
-        if (match) {
-          threats.push({
-            pattern,
-            context: normalizedCtx,
-            matchedContent: String(match[0] ?? '').slice(0, 200),
-            detectionMethod: 'regex',
-          });
-        }
-      /* v8 ignore start -- custom pattern context check; requires pattern compiler to throw during safeMatch */
-      } catch {
-        timeouts.push(pattern);
-        const elapsed = (performance.now() - patternStart) / 1000;
-        await this.monitor.recordMetric(pattern, elapsed, processed.length, false, true, this.agentHandler, correlationId);
-      }
-      /* v8 ignore stop */
+    const decodedViewThreat = this.checkDecodedViewPathTraversal(processedContent, rawViewContent);
+    if (decodedViewThreat !== null) {
+      regexThreats.push(decodedViewThreat);
+      matchedPatterns.push(decodedViewThreat.pattern);
     }
 
-    for (const customPattern of this.customPatterns) {
-      const ctxSet = this.compiledCustomContexts.get(customPattern) ?? CTX_ALL;
-      if (!ctxSet.has(normalizedCtx)) continue;
+    const urlDecodedViewContent = this.preprocessor.truncateSafely(decodedContent);
+    const urlDecodedPass = await this.checkRegexPatterns(urlDecodedViewContent, context, correlationId, {
+      urlDecodedViewOnly: true,
+    });
+    regexThreats.push(...urlDecodedPass.threats);
+    matchedPatterns.push(...urlDecodedPass.matchedPatterns);
 
-      try {
-        const match = await this.compiler.safeMatch(customPattern, processed);
-        if (match) {
-          threats.push({
-            pattern: customPattern,
-            context: normalizedCtx,
-            matchedContent: String(match[0] ?? '').slice(0, 200),
-            detectionMethod: 'regex_custom',
-          });
-        }
-      /* v8 ignore start -- custom pattern timeout catch; requires safeMatch to throw */
-      } catch {
-        timeouts.push(customPattern);
-      }
-      /* v8 ignore stop */
+    if (decodeBudgetExhausted.value) {
+      regexThreats.push({
+        type: 'regex',
+        pattern: DECODE_BUDGET_EXHAUSTED_PATTERN,
+        match: DECODE_BUDGET_EXHAUSTED_PATTERN,
+        position: 0,
+        category: 'custom',
+        weight: resolvePatternWeight(DECODE_BUDGET_EXHAUSTED_PATTERN, 'custom'),
+      });
+      matchedPatterns.push(DECODE_BUDGET_EXHAUSTED_PATTERN);
     }
 
-    const analysis = this.semantic.analyze(processed);
-    const semanticScore = this.semantic.getThreatScore(analysis);
-
-    if (semanticScore >= this.semanticThreshold) {
-      const topAttack = Object.entries(analysis.attackProbabilities)
-        .sort(([, a], [, b]) => b - a)[0];
-      if (topAttack) {
-        threats.push({
-          pattern: `semantic:${topAttack[0]}`,
-          context: normalizedCtx,
-          matchedContent: `score=${semanticScore.toFixed(3)}`,
-          detectionMethod: 'semantic',
-        });
-      }
+    const additiveViewContent = this.preprocessor.preprocessShortBase64AdditiveView(content);
+    if (additiveViewContent) {
+      const additivePass = await this.checkRegexPatterns(additiveViewContent, context, correlationId);
+      regexThreats.push(...additivePass.threats);
+      matchedPatterns.push(...additivePass.matchedPatterns);
     }
 
-    const regexScore = threats.some((t) => t.detectionMethod.startsWith('regex')) ? 1.0 : 0.0;
-    const threatScore = Math.max(regexScore, semanticScore);
+    const { threats: semanticThreats } = this.checkSemanticThreats(processedContent, content);
+
+    const threatScoreThreshold = this.threatScoreThreshold;
+    const isThreat =
+      SusPatternsManager.regexAnomaly(regexThreats) >= threatScoreThreshold || semanticThreats.length > 0;
+
+    const threatScore = SusPatternsManager.calculateThreatScore(regexThreats, semanticThreats);
+
+    const threats: DetectionResult['threats'] = [
+      ...regexThreats.map((threat) => ({
+        pattern: threat.pattern,
+        context: normalizedCtx,
+        matchedContent: threat.match,
+        detectionMethod: 'regex',
+      })),
+      ...semanticThreats.map((threat) => ({
+        pattern: `semantic:${threat.attack_type}`,
+        context: normalizedCtx,
+        matchedContent: `score=${threatScore.toFixed(3)}`,
+        detectionMethod: 'semantic',
+      })),
+    ];
 
     const executionTime = (performance.now() - startTime) / 1000;
 
     return {
-      isThreat: threats.length > 0,
+      isThreat,
       threatScore,
       threats,
       executionTime,
-      timeouts,
+      timeouts: [],
       correlationId,
       originalLength,
-      processedLength: processed.length,
+      processedLength: processedContent.length,
     };
   }
 
@@ -275,15 +446,17 @@ export class SusPatternsManager {
   ): Promise<[boolean, string | null]> {
     const result = await this.detect(content, ipAddress, context, correlationId);
     if (result.isThreat && result.threats.length > 0) {
-      return [true, result.threats[0].pattern];
+      const threat = result.threats[0] as DetectionResult['threats'][number];
+      if (threat.detectionMethod === 'semantic') {
+        return [true, `semantic:${threat.pattern.slice('semantic:'.length)}`];
+      }
+      return [true, threat.pattern];
     }
     return [false, null];
   }
 
   async addPattern(pattern: string, custom = true): Promise<void> {
     this.customPatterns.add(pattern);
-    this.compiledCustomContexts.set(pattern, CTX_ALL);
-
     if (custom && this.redisHandler) {
       await this.redisHandler.setKey('patterns', 'custom', [...this.customPatterns].join(','));
     }
@@ -291,18 +464,17 @@ export class SusPatternsManager {
 
   async removePattern(pattern: string): Promise<void> {
     this.customPatterns.delete(pattern);
-    this.compiledCustomContexts.delete(pattern);
-
     if (this.redisHandler) {
       await this.redisHandler.setKey('patterns', 'custom', [...this.customPatterns].join(','));
     }
-
-    await this.compiler.clearCache();
+    if (this.compiler !== null) {
+      await this.compiler.clearCache();
+    }
     await this.monitor.removePatternStats(pattern);
   }
 
   getDefaultPatterns(): string[] {
-    return PATTERN_DEFINITIONS.map(([p]) => p);
+    return getCompiledPatterns().map((entry) => entry.source);
   }
 
   getCustomPatterns(): string[] {
@@ -336,9 +508,10 @@ export class SusPatternsManager {
 
   async reset(): Promise<void> {
     this.customPatterns.clear();
-    this.compiledCustomContexts.clear();
     this.agentHandler = null;
-    await this.compiler.clearCache();
+    if (this.compiler !== null) {
+      await this.compiler.clearCache();
+    }
     await this.monitor.clearStats();
   }
 }
