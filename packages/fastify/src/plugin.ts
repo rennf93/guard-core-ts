@@ -52,6 +52,25 @@ export async function guardPlugin(fastify: FastifyInstance, options: GuardPlugin
       return;
     }
 
+    /* Stamp for preValidation and onSend. Excluded/bypassed paths answered here
+       never reach preValidation, and onSend skips responses without a stamp. */
+    (request as unknown as Record<string, unknown>)['_guardRequest'] = guardReq;
+    (request as unknown as Record<string, unknown>)['_guardRouteConfig'] = routeConfig;
+    (request as unknown as Record<string, unknown>)['_guardStartTime'] = performance.now();
+  });
+
+  fastify.addHook('preValidation', async (request, reply) => {
+    const stamped = request as unknown as Record<string, unknown>;
+    const guardReq = stamped['_guardRequest'] as FastifyGuardRequest | undefined;
+    const routeConfig = stamped['_guardRouteConfig'] as RouteConfig | null | undefined;
+    if (!guardReq) return;
+
+    /* Body-dependent checks (penetration scan, size/content rules) need the
+       parsed body, which Fastify only exposes after its parsing stage: at
+       onRequest time request.body is always undefined. Running the pipeline
+       here keeps blocking ahead of validation and the handler while giving
+       the engine full request visibility. Parse memory is bounded by the
+       framework's bodyLimit, not by the adapter. */
     const blockResponse = await components.pipeline.execute(guardReq);
     if (blockResponse) {
       sendFastifyResponse(reply, blockResponse);
@@ -62,10 +81,6 @@ export async function guardPlugin(fastify: FastifyInstance, options: GuardPlugin
       const clientIp = guardReq.clientHost ?? 'unknown';
       await components.behavioralProcessor.processUsageRules(guardReq, clientIp, routeConfig);
     }
-
-    (request as unknown as Record<string, unknown>)['_guardRequest'] = guardReq;
-    (request as unknown as Record<string, unknown>)['_guardRouteConfig'] = routeConfig;
-    (request as unknown as Record<string, unknown>)['_guardStartTime'] = performance.now();
   });
 
   fastify.addHook('onSend', async (request, reply, payload) => {
@@ -104,7 +119,9 @@ function sendFastifyResponse(reply: FastifyReply, response: GuardResponse): void
   }
 
   if (response.headers['location']) {
-    reply.redirect(response.headers['location']);
+    /* Preserve the engine's redirect status (spec 11: HTTPS redirects are 301);
+       reply.redirect(url) alone would fall back to 302. */
+    reply.redirect(response.headers['location'], response.statusCode);
     return;
   }
 

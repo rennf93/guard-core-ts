@@ -1,11 +1,42 @@
+import type { IncomingHttpHeaders } from 'http';
 import type { Request, Response } from 'express';
 import type { GuardRequest, GuardRequestState, GuardResponse, GuardResponseFactory } from '@guardcore/core';
+
+function normalizeHeaders(headers: IncomingHttpHeaders): Record<string, string> {
+  const normalized: Record<string, string> = {};
+  for (const [name, value] of Object.entries(headers)) {
+    if (value === undefined) continue;
+    normalized[name] = Array.isArray(value) ? value.join(', ') : String(value);
+  }
+  return normalized;
+}
+
+function normalizeQueryParams(query: Record<string, unknown>): Record<string, string> {
+  const normalized: Record<string, string> = {};
+  for (const [key, value] of Object.entries(query ?? {})) {
+    if (value === undefined || value === null) continue;
+    if (typeof value === 'string') {
+      normalized[key] = value;
+    } else if (Array.isArray(value)) {
+      normalized[key] = value.map((v) => String(v)).join(', ');
+    } else if (typeof value === 'object') {
+      normalized[key] = JSON.stringify(value);
+    } else {
+      normalized[key] = String(value);
+    }
+  }
+  return normalized;
+}
 
 export class ExpressGuardRequest implements GuardRequest {
   private _state: GuardRequestState = {};
   private rawBody: Uint8Array | null = null;
+  private readonly _headers: Readonly<Record<string, string>>;
+  private readonly _queryParams: Readonly<Record<string, string>>;
 
   constructor(private readonly req: Request) {
+    this._headers = normalizeHeaders(req.headers);
+    this._queryParams = normalizeQueryParams(req.query as Record<string, unknown>);
     const raw = (req as unknown as Record<string, unknown>)['rawBody'];
     if (raw instanceof Uint8Array) {
       this.rawBody = raw;
@@ -20,8 +51,8 @@ export class ExpressGuardRequest implements GuardRequest {
   urlReplaceScheme(scheme: string): string { return this.urlFull.replace(/^https?/, scheme); }
   get method(): string { return this.req.method; }
   get clientHost(): string | null { return this.req.socket.remoteAddress ?? null; }
-  get headers(): Readonly<Record<string, string>> { return this.req.headers as Record<string, string>; }
-  get queryParams(): Readonly<Record<string, string>> { return this.req.query as Record<string, string>; }
+  get headers(): Readonly<Record<string, string>> { return this._headers; }
+  get queryParams(): Readonly<Record<string, string>> { return this._queryParams; }
   async body(): Promise<Uint8Array> { return this.rawBody ?? new Uint8Array(0); }
   get state(): GuardRequestState { return this._state; }
   get scope(): Readonly<Record<string, unknown>> { return {}; }
