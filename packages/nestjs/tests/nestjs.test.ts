@@ -81,6 +81,34 @@ describe('NestGuardRequest', () => {
     expect(request.headers).toEqual({ 'user-agent': 'Test/1.0' });
   });
 
+  it('joins array-valued headers into a single string', () => {
+    const req = new NestGuardRequest(createMockExpressRequest({
+      headers: { 'set-cookie': ['a=1', 'b=2'], 'user-agent': 'Test/1.0' },
+    }));
+    expect(req.headers['set-cookie']).toBe('a=1, b=2');
+  });
+
+  it('drops undefined header values instead of leaking them to the engine', () => {
+    const req = new NestGuardRequest(createMockExpressRequest({
+      headers: { 'user-agent': 'Test/1.0', 'x-empty': undefined },
+    }));
+    expect(req.headers).toEqual({ 'user-agent': 'Test/1.0' });
+  });
+
+  it('flattens array and nested query params into strings', () => {
+    const req = new NestGuardRequest(createMockExpressRequest({
+      query: { tags: ['a', 'b'], nested: { x: 1 }, flag: 1 },
+    }));
+    expect(req.queryParams).toEqual({ tags: 'a, b', nested: '{"x":1}', flag: '1' });
+  });
+
+  it('drops null and undefined query params', () => {
+    const req = new NestGuardRequest(createMockExpressRequest({
+      query: { q: '1', gone: undefined, nulled: null },
+    }));
+    expect(req.queryParams).toEqual({ q: '1' });
+  });
+
   it('returns correct queryParams', () => {
     expect(request.queryParams).toEqual({ q: '1' });
   });
@@ -208,9 +236,13 @@ describe('SecurityMiddlewareNest', () => {
     return {
       statusCode: 200,
       setHeader: vi.fn((name: string, value: string) => { headers[name] = value; }),
+      getHeaders: vi.fn(() => ({ ...headers })),
       status: vi.fn().mockReturnThis(),
       json: vi.fn(),
+      send: vi.fn(),
       redirect: vi.fn(),
+      write: vi.fn().mockReturnValue(true),
+      end: vi.fn(),
       _headers: headers,
     };
   }
@@ -256,6 +288,7 @@ describe('SecurityMiddlewareNest', () => {
 
     expect(next).not.toHaveBeenCalled();
     expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.send).toHaveBeenCalledWith('pass');
   });
 
   it('sends response when security bypass returns', async () => {
@@ -308,6 +341,34 @@ describe('SecurityMiddlewareNest', () => {
 
     expect(next).not.toHaveBeenCalled();
     expect(res.status).toHaveBeenCalledWith(403);
+  });
+
+  it('sends the engine body without re-wrapping it in a detail envelope', async () => {
+    const { SecurityMiddlewareNest } = await import('../src/guard-module.js');
+    const components = createMockComponents();
+    const middleware = new SecurityMiddlewareNest(components);
+
+    const blockResponse: GuardResponse = {
+      statusCode: 403,
+      headers: { 'content-type': 'application/json' },
+      setHeader() {},
+      body: new TextEncoder().encode(JSON.stringify({ detail: 'Blocked' })),
+      bodyText: JSON.stringify({ detail: 'Blocked' }),
+    };
+    (components.pipeline.execute as ReturnType<typeof vi.fn>).mockResolvedValueOnce(blockResponse);
+
+    const req = createMockReq();
+    const res = createMockRes();
+    const next = vi.fn();
+
+    await middleware.use(req, res as never, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.json).not.toHaveBeenCalled();
+    expect(res.send).toHaveBeenCalledTimes(1);
+    expect((res.send as ReturnType<typeof vi.fn>).mock.calls[0][0].toString()).toBe(
+      JSON.stringify({ detail: 'Blocked' }),
+    );
   });
 
   it('redirects when location header present', async () => {
@@ -385,6 +446,123 @@ describe('SecurityMiddlewareNest', () => {
     expect(typedReq['_guardRequest']).toBeDefined();
     expect(typedReq['_guardRouteConfig']).toBeNull();
     expect(typeof typedReq['_guardStartTime']).toBe('number');
+  });
+
+  it('calls processResponse when the response ends and applies headers before end', async () => {
+    const { SecurityMiddlewareNest } = await import('../src/guard-module.js');
+    const components = createMockComponents();
+    const middleware = new SecurityMiddlewareNest(components);
+
+    const events: string[] = [];
+    (components.errorResponseFactory.processResponse as ReturnType<typeof vi.fn>).mockImplementation(
+      async (_req: unknown, capturedRes: GuardResponse) => {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        capturedRes.setHeader('x-guard', 'done');
+        events.push('processResponse');
+        return capturedRes;
+      },
+    );
+
+    const req = createMockReq();
+    const res = createMockRes();
+    const originalEnd = res.end as ReturnType<typeof vi.fn>;
+    originalEnd.mockImplementation(() => {
+      events.push('end');
+      return res;
+    });
+    const next = vi.fn();
+
+    await middleware.use(req, res as never, next);
+
+    res.end('response body');
+
+    await vi.waitFor(() => {
+      expect(originalEnd).toHaveBeenCalled();
+    });
+    expect(events).toEqual(['processResponse', 'end']);
+    expect(res._headers['x-guard']).toBe('done');
+  });
+
+  it('captures chunks written via res.write into the response body', async () => {
+    const { SecurityMiddlewareNest } = await import('../src/guard-module.js');
+    const components = createMockComponents();
+    const middleware = new SecurityMiddlewareNest(components);
+
+    let captured: GuardResponse | undefined;
+    (components.errorResponseFactory.processResponse as ReturnType<typeof vi.fn>).mockImplementation(
+      async (_req: unknown, capturedRes: GuardResponse) => {
+        captured = capturedRes;
+        return capturedRes;
+      },
+    );
+
+    const req = createMockReq();
+    const res = createMockRes();
+    const originalEnd = res.end as ReturnType<typeof vi.fn>;
+    const next = vi.fn();
+
+    await middleware.use(req, res as never, next);
+
+    res.write('hello ');
+    res.end('world');
+
+    await vi.waitFor(() => {
+      expect(originalEnd).toHaveBeenCalled();
+    });
+    expect(captured?.bodyText).toBe('hello world');
+  });
+
+  it('still ends the response when processResponse rejects', async () => {
+    const { SecurityMiddlewareNest } = await import('../src/guard-module.js');
+    const components = createMockComponents();
+    const middleware = new SecurityMiddlewareNest(components);
+
+    (components.errorResponseFactory.processResponse as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error('processing failed'),
+    );
+
+    const req = createMockReq();
+    const res = createMockRes();
+    const originalEnd = res.end as ReturnType<typeof vi.fn>;
+    const next = vi.fn();
+
+    await middleware.use(req, res as never, next);
+
+    res.end('data');
+
+    await vi.waitFor(() => {
+      expect(originalEnd).toHaveBeenCalled();
+    });
+    expect(next).toHaveBeenCalled();
+  });
+
+  it('caps the captured response body at the bounded read limit', async () => {
+    const { SecurityMiddlewareNest } = await import('../src/guard-module.js');
+    const components = createMockComponents();
+    const middleware = new SecurityMiddlewareNest(components);
+
+    let captured: GuardResponse | undefined;
+    (components.errorResponseFactory.processResponse as ReturnType<typeof vi.fn>).mockImplementation(
+      async (_req: unknown, capturedRes: GuardResponse) => {
+        captured = capturedRes;
+        return capturedRes;
+      },
+    );
+
+    const req = createMockReq();
+    const res = createMockRes();
+    const originalEnd = res.end as ReturnType<typeof vi.fn>;
+    const next = vi.fn();
+
+    await middleware.use(req, res as never, next);
+
+    res.write('a'.repeat(50_000));
+    res.end('');
+
+    await vi.waitFor(() => {
+      expect(originalEnd).toHaveBeenCalled();
+    });
+    expect(captured?.bodyText?.length).toBe(10_000);
   });
 });
 

@@ -128,10 +128,7 @@ export const KNOB_MAP: Readonly<Record<string, KnobSpec>> = {
   detection_slow_pattern_threshold: { config_knob: 'detectionSlowPatternThreshold', note: '' },
   detection_monitor_history_size: { config_knob: 'detectionMonitorHistorySize', note: '' },
   detection_semantic_threshold: { config_knob: 'detectionSemanticThreshold', note: '' },
-  detection_max_body_inspect_bytes: {
-    config_knob: null,
-    note: 'detect() receives pre-decoded strings; the TS config surface has no body byte cap',
-  },
+  detection_max_body_inspect_bytes: { config_knob: 'detectionMaxBodyInspectBytes', note: '' },
   detection_anomaly_emission_cooldown: {
     config_knob: null,
     note: 'PerformanceMonitor anomaly emission cooldown is not configurable in the TS config surface',
@@ -140,10 +137,7 @@ export const KNOB_MAP: Readonly<Record<string, KnobSpec>> = {
     config_knob: null,
     note: 'PerformanceMonitor minimum sample count is not configurable in the TS config surface',
   },
-  detection_threat_score_threshold: {
-    config_knob: null,
-    note: 'TS verdicts are threats.length > 0; the TS config surface has no threat score gate',
-  },
+  detection_threat_score_threshold: { config_knob: 'detectionThreatScoreThreshold', note: '' },
 };
 
 export const COMPARISON_GAPS: ReadonlyArray<string> = [

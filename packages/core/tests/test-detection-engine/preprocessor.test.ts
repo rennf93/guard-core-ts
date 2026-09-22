@@ -29,22 +29,28 @@ describe('ContentPreprocessor', () => {
     expect(preprocessor.removeExcessiveWhitespace('a\n\n\nb')).toBe('a b');
   });
 
-  it('decodes URL encoding', () => {
-    expect(preprocessor.decodeCommonEncodings('%3Cscript%3E')).toBe('<script>');
-    expect(preprocessor.decodeCommonEncodings('%27%20OR%201%3D1')).toBe("' OR 1=1");
+  // Spec 4.0.2 section 05: the decode chain is an async iterative pipeline
+  // (preprocessor.py decode_common_encodings) covering percent-encoding, HTML
+  // entities, %u, \x, LDAP \XX, \u and base64 candidates.
+  it('decodes URL encoding', async () => {
+    expect(await preprocessor.decodeCommonEncodings('%3Cscript%3E')).toBe('<script>');
+    expect(await preprocessor.decodeCommonEncodings('%27%20OR%201%3D1')).toBe("' OR 1=1");
   });
 
-  it('decodes HTML entities', () => {
-    expect(preprocessor.decodeCommonEncodings('&lt;script&gt;')).toBe('<script>');
-    expect(preprocessor.decodeCommonEncodings('&amp;')).toBe('&');
+  it('decodes HTML entities', async () => {
+    expect(await preprocessor.decodeCommonEncodings('&lt;script&gt;')).toBe('<script>');
+    expect(await preprocessor.decodeCommonEncodings('&amp;')).toBe('&');
   });
 
-  it('decodes double encoding', () => {
-    expect(preprocessor.decodeCommonEncodings('%253Cscript%253E')).toBe('<script>');
+  it('decodes double encoding', async () => {
+    expect(await preprocessor.decodeCommonEncodings('%253Cscript%253E')).toBe('<script>');
   });
 
+  // Spec 4.0.2 section 05 (truncation.py truncate_safely): the scan cap is
+  // detection_max_body_inspect_bytes, passed as the max_full_scan_bytes ctor
+  // arg, not detection_max_content_length.
   it('truncates to max length when not preserving patterns', () => {
-    const short = new ContentPreprocessor(10, false);
+    const short = new ContentPreprocessor(10, false, 10);
     expect(short.truncateSafely('a'.repeat(20))).toBe('a'.repeat(10));
   });
 
@@ -78,33 +84,35 @@ describe('ContentPreprocessor', () => {
     expect(results[1]).toBe('normal');
   });
 
-  it('decodes numeric HTML entities (decimal)', () => {
+  it('decodes numeric HTML entities (decimal)', async () => {
     const pp = new ContentPreprocessor();
-    const result = pp.decodeCommonEncodings('&#60;script&#62;');
+    const result = await pp.decodeCommonEncodings('&#60;script&#62;');
     expect(result).toBe('<script>');
   });
 
-  it('decodes numeric HTML entities (hex)', () => {
+  it('decodes numeric HTML entities (hex)', async () => {
     const pp = new ContentPreprocessor();
-    const result = pp.decodeCommonEncodings('&#x3c;script&#x3e;');
+    const result = await pp.decodeCommonEncodings('&#x3c;script&#x3e;');
     expect(result).toBe('<script>');
   });
 
-  it('handles partial URL encoding gracefully', () => {
+  it('handles partial URL encoding gracefully', async () => {
     const pp = new ContentPreprocessor();
-    const result = pp.decodeCommonEncodings('%ZZnot-valid');
+    // urllib.parse.unquote(errors='ignore') leaves invalid escapes untouched
+    // (preprocessor.py percent-decode step).
+    const result = await pp.decodeCommonEncodings('%ZZnot-valid');
     expect(result).toBe('%ZZnot-valid');
   });
 
   it('truncates long content without attack preservation', () => {
-    const pp = new ContentPreprocessor(50, false);
+    const pp = new ContentPreprocessor(50, false, 50);
     const longContent = 'a'.repeat(100);
     const result = pp.truncateSafely(longContent);
     expect(result.length).toBe(50);
   });
 
   it('truncates long content with attack regions preserved', () => {
-    const pp = new ContentPreprocessor(100, true);
+    const pp = new ContentPreprocessor(10000, true, 100);
     const benign = 'x'.repeat(200);
     const withAttack = benign.slice(0, 80) + '<script>alert(1)</script>' + benign.slice(80);
     const result = pp.truncateSafely(withAttack);
@@ -113,7 +121,7 @@ describe('ContentPreprocessor', () => {
   });
 
   it('handles content with attack region larger than max', () => {
-    const pp = new ContentPreprocessor(20, true);
+    const pp = new ContentPreprocessor(10000, true, 20);
     const content = '<script>' + 'x'.repeat(100) + '</script>';
     const result = pp.truncateSafely(content);
     expect(result.length).toBeLessThanOrEqual(20);
@@ -158,67 +166,73 @@ describe('ContentPreprocessor', () => {
 });
 
 describe('ContentPreprocessor truncation edge cases', () => {
+  // Region extraction pads every indicator match by 100 chars on each side
+  // and merges overlapping windows (truncation.py extract_attack_regions), so
+  // benign runs shorter than the padding are absorbed into the attack region;
+  // the truncation budget is max_full_scan_bytes, not max_content_length.
   it('builds result with attack regions and non-attack context', () => {
-    const pp = new ContentPreprocessor(80, true);
-    const benign = 'A'.repeat(40);
+    const pp = new ContentPreprocessor(10000, true, 250);
+    const benign = 'A'.repeat(150);
     const content = benign + '<script>alert(1)</script>' + benign + 'MORE';
     const result = pp.truncateSafely(content);
-    expect(result.length).toBeLessThanOrEqual(80);
+    expect(result.length).toBeLessThanOrEqual(250);
     expect(result).toContain('<script>');
   });
 
   it('handles multiple separated attack regions', () => {
-    const pp = new ContentPreprocessor(200, true);
+    const pp = new ContentPreprocessor(10000, true, 120);
     const content = 'safe1 <script>x</script> safe2safe2safe2safe2safe2safe2safe2safe2safe2safe2safe2safe2safe2safe2safe2safe2safe2safe2safe2 eval(bad) safe3safe3safe3safe3safe3safe3safe3safe3safe3safe3';
     const result = pp.truncateSafely(content);
-    expect(result.length).toBeLessThanOrEqual(200);
+    expect(result.length).toBeLessThanOrEqual(120);
   });
 
   it('concatenates attack regions when they exceed max length', () => {
-    const pp = new ContentPreprocessor(30, true);
+    const pp = new ContentPreprocessor(10000, true, 30);
     const content = '<script>alert(1)</script>' + 'x'.repeat(50) + '<script>alert(2)</script>';
     const result = pp.truncateSafely(content);
     expect(result.length).toBeLessThanOrEqual(30);
   });
 
   it('adds non-attack content between regions', () => {
-    const pp = new ContentPreprocessor(300, true);
+    const pp = new ContentPreprocessor(10000, true, 150);
     const content = 'safe ' + '<script>x</script>' + ' middle ' + 'eval(' + 'y'.repeat(200) + ')';
     const result = pp.truncateSafely(content);
-    expect(result.length).toBeLessThanOrEqual(300);
+    expect(result.length).toBeLessThanOrEqual(150);
   });
 
   it('handles content with no attack regions but exceeding max', () => {
-    const pp = new ContentPreprocessor(10, true);
+    const pp = new ContentPreprocessor(10000, true, 10);
     const content = 'normal text exceeding max length with no attacks';
     const result = pp.truncateSafely(content);
     expect(result.length).toBe(10);
   });
 
-  it('decodes mixed encoding in single pass', () => {
+  it('decodes mixed encoding in single pass', async () => {
     const pp = new ContentPreprocessor();
-    const result = pp.decodeCommonEncodings('hello%20world&amp;goodbye');
+    const result = await pp.decodeCommonEncodings('hello%20world&amp;goodbye');
     expect(result).toBe('hello world&goodbye');
   });
 
-  it('stops decoding after max iterations', () => {
+  it('stops decoding after max iterations', async () => {
     const pp = new ContentPreprocessor();
-    const result = pp.decodeCommonEncodings('%252525252525hello');
+    // 16-pass decode budget (preprocessor.py max_decode_iterations); deeply
+    // nested %25 runs decode until the budget or a fixed point is reached.
+    const result = await pp.decodeCommonEncodings('%252525252525hello');
     expect(typeof result).toBe('string');
   });
 
   it('assembles context parts between non-overlapping attack regions', async () => {
-    const pp = new ContentPreprocessor(150, true);
+    const pp = new ContentPreprocessor(10000, true, 100);
     const safe1 = 'SAFE1'.repeat(10);
     const safe2 = 'SAFE2'.repeat(10);
     const content = safe1 + '<script>x</script>' + safe2 + 'eval(y)' + 'END';
     const result = pp.truncateSafely(content);
-    expect(result.length).toBeLessThanOrEqual(150);
+    expect(result.length).toBeLessThanOrEqual(100);
     expect(result).toContain('<script>');
   });
 
   it('skips context when remaining is zero', () => {
-    const pp = new ContentPreprocessor(30, true);
+    const pp = new ContentPreprocessor(10000, true, 30);
     const attack1 = '<script>alert(1)</script>';
     const attack2 = 'eval(dangerous)';
     const content = attack1 + 'x'.repeat(10) + attack2;
@@ -226,10 +240,10 @@ describe('ContentPreprocessor truncation edge cases', () => {
     expect(result.length).toBeLessThanOrEqual(30);
   });
 
-  it('handles HTML entity edge cases', () => {
+  it('handles HTML entity edge cases', async () => {
     const pp = new ContentPreprocessor();
-    expect(pp.decodeCommonEncodings('&#039;test&#039;')).toBe("'test'");
-    expect(pp.decodeCommonEncodings('&#x27;test&#x27;')).toBe("'test'");
+    expect(await pp.decodeCommonEncodings('&#039;test&#039;')).toBe("'test'");
+    expect(await pp.decodeCommonEncodings('&#x27;test&#x27;')).toBe("'test'");
   });
 
   it('merges non-overlapping attack regions separately', () => {

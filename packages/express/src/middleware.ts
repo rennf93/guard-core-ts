@@ -19,92 +19,151 @@ export interface SecurityMiddlewareOptions {
   guardDecorator?: unknown;
 }
 
+/** Upper bound on response bytes captured for behavioral return-pattern scans (spec 1.4 bounded read). */
+const RESPONSE_CAPTURE_LIMIT = 10_000;
+
 export function createSecurityMiddleware(options: SecurityMiddlewareOptions) {
   const resolved = SecurityConfigSchema.parse(options.config);
   const logger: Logger = resolved.logger ?? defaultLogger;
   const responseFactory = new ExpressResponseFactory();
 
   let initialized = false;
+  let initPromise: Promise<void> | null = null;
   let components: SecurityMiddlewareComponents;
 
-  async function initialize(): Promise<void> {
-    if (initialized) return;
-    components = await initializeSecurityMiddleware(
+  function initialize(): Promise<void> {
+    if (initialized) return Promise.resolve();
+    /* Single-flight: concurrent first requests share one initialization. */
+    initPromise ??= initializeSecurityMiddleware(
       resolved, logger, responseFactory,
       options.agentHandler, options.geoIpHandler, options.guardDecorator,
-    );
-    initialized = true;
-    logger.info('Guard security middleware initialized');
+    )
+      .then((initializedComponents) => {
+        components = initializedComponents;
+        initialized = true;
+        logger.info('Guard security middleware initialized');
+      })
+      .catch((error: unknown) => {
+        /* Allow a retry on the next request instead of caching the failure. */
+        initPromise = null;
+        throw error;
+      });
+    return initPromise;
   }
 
   return async function guardMiddleware(req: Request, res: Response, next: NextFunction): Promise<void> {
-    await initialize();
+    try {
+      await initialize();
 
-    const startTime = performance.now();
-    const guardReq = new ExpressGuardRequest(req);
+      const startTime = performance.now();
+      const guardReq = new ExpressGuardRequest(req);
 
-    const passthrough = await components.bypassHandler.handlePassthrough(
-      guardReq,
-      async () => createPassthroughResponse(),
-    );
-    if (passthrough) {
-      sendGuardResponse(res, passthrough);
-      return;
+      const passthrough = await components.bypassHandler.handlePassthrough(
+        guardReq,
+        async () => createPassthroughResponse(),
+      );
+      if (passthrough) {
+        sendGuardResponse(res, passthrough);
+        return;
+      }
+
+      const routeConfig = components.routeResolver.getRouteConfig(guardReq);
+
+      const bypass = await components.bypassHandler.handleSecurityBypass(
+        guardReq,
+        async () => createPassthroughResponse(),
+        routeConfig,
+      );
+      if (bypass) {
+        sendGuardResponse(res, bypass);
+        return;
+      }
+
+      const blockResponse = await components.pipeline.execute(guardReq);
+      if (blockResponse) {
+        sendGuardResponse(res, blockResponse);
+        return;
+      }
+
+      if (routeConfig && routeConfig.behaviorRules.length > 0) {
+        const clientIp = guardReq.clientHost ?? 'unknown';
+        await components.behavioralProcessor.processUsageRules(guardReq, clientIp, routeConfig);
+      }
+
+      interceptResponse(guardReq, res, startTime, components, routeConfig ?? null);
+
+      next();
+    } catch (error) {
+      /* Fail secure: forward to the framework error path (500) instead of leaving
+         the request hanging on an unhandled rejection (Express 4 does not route
+         async middleware rejections to error handlers on its own). */
+      next(error instanceof Error ? error : new Error(String(error)));
     }
+  };
+}
 
-    const routeConfig = components.routeResolver.getRouteConfig(guardReq);
+function interceptResponse(
+  guardReq: ExpressGuardRequest,
+  res: Response,
+  startTime: number,
+  components: SecurityMiddlewareComponents,
+  routeConfig: RouteConfig | null,
+): void {
+  const originalEnd = res.end;
+  const originalWrite = res.write;
+  const chunks: Buffer[] = [];
+  let capturedBytes = 0;
 
-    const bypass = await components.bypassHandler.handleSecurityBypass(
-      guardReq,
-      async () => createPassthroughResponse(),
-      routeConfig,
-    );
-    if (bypass) {
-      sendGuardResponse(res, bypass);
-      return;
+  const capture = (chunk: unknown): void => {
+    if (capturedBytes >= RESPONSE_CAPTURE_LIMIT) return;
+    let data: Buffer | null = null;
+    if (typeof chunk === 'string') data = Buffer.from(chunk, 'utf-8');
+    else if (Buffer.isBuffer(chunk)) data = chunk;
+    else if (ArrayBuffer.isView(chunk) && !(chunk instanceof DataView)) {
+      data = Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);
     }
+    if (!data || data.length === 0) return;
+    const remaining = RESPONSE_CAPTURE_LIMIT - capturedBytes;
+    chunks.push(remaining < data.length ? data.subarray(0, remaining) : data);
+    capturedBytes += Math.min(data.length, remaining);
+  };
 
-    const blockResponse = await components.pipeline.execute(guardReq);
-    if (blockResponse) {
-      sendGuardResponse(res, blockResponse);
-      return;
-    }
+  res.write = function (chunk: unknown, ...args: unknown[]): boolean {
+    capture(chunk);
+    return (originalWrite as (...writeArgs: unknown[]) => boolean).apply(res, [chunk, ...args]);
+  } as typeof res.write;
 
-    if (routeConfig && routeConfig.behaviorRules.length > 0) {
-      const clientIp = guardReq.clientHost ?? 'unknown';
-      await components.behavioralProcessor.processUsageRules(guardReq, clientIp, routeConfig);
-    }
+  res.end = function (chunk?: unknown, ...args: unknown[]): Response {
+    capture(chunk);
 
-    const originalEnd = res.end;
-    const chunks: Buffer[] = [];
-
-    res.end = function (chunk: unknown, ...args: unknown[]): Response {
-      if (chunk) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
-
-      const responseTime = (performance.now() - startTime) / 1000;
-      const body = Buffer.concat(chunks);
-      const capturedResponse: GuardResponse = {
-        statusCode: res.statusCode,
-        headers: Object.fromEntries(
-          Object.entries(res.getHeaders()).map(([k, v]) => [k, String(v)]),
-        ),
-        setHeader(name: string, value: string) { res.setHeader(name, value); },
-        body: new Uint8Array(body),
-        bodyText: body.toString('utf-8'),
-      };
-
-      components.errorResponseFactory.processResponse(
-        guardReq, capturedResponse, responseTime, routeConfig ?? null,
-        routeConfig ? async (request: GuardRequest, response: GuardResponse, clientIp: string, rc: RouteConfig) => {
-          await components.behavioralProcessor.processReturnRules(request, response, clientIp, rc);
-        } : undefined,
-      ).catch(() => {});
-
-      return originalEnd.apply(res, [chunk, ...args] as Parameters<typeof originalEnd>);
+    const responseTime = (performance.now() - startTime) / 1000;
+    const body = Buffer.concat(chunks);
+    const capturedResponse: GuardResponse = {
+      statusCode: res.statusCode,
+      headers: Object.fromEntries(
+        Object.entries(res.getHeaders()).map(([k, v]) => [k, String(v)]),
+      ),
+      setHeader(name: string, value: string) { res.setHeader(name, value); },
+      body: new Uint8Array(body),
+      bodyText: body.toString('utf-8'),
     };
 
-    next();
-  };
+    const endArgs = chunk === undefined && args.length === 0 ? [] : [chunk, ...args];
+    const finish = (): void => {
+      (originalEnd as (...endArgs: unknown[]) => Response).apply(res, endArgs);
+    };
+
+    /* Header mutations must complete before the response ends, or they are lost
+       (headers are flushed by the original end call). */
+    components.errorResponseFactory.processResponse(
+      guardReq, capturedResponse, responseTime, routeConfig,
+      routeConfig ? async (request: GuardRequest, response: GuardResponse, clientIp: string, rc: RouteConfig) => {
+        await components.behavioralProcessor.processReturnRules(request, response, clientIp, rc);
+      } : undefined,
+    ).then(finish, finish);
+
+    return res;
+  } as unknown as typeof res.end;
 }
 
 function createPassthroughResponse(): GuardResponse {

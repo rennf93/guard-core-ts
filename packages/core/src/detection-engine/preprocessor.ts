@@ -1,220 +1,252 @@
-const ATTACK_INDICATORS = [
-  /<script/i,
-  /javascript:/i,
-  /on\w+=/i,
-  /SELECT\s+.{0,50}?\s+FROM/i,
-  /UNION\s+SELECT/i,
-  /\.\.\//,
-  /eval\s*\(/i,
-  /exec\s*\(/i,
-  /system\s*\(/i,
-  /<\?php/i,
-  /<%%/,
-  /\{\{/,
-  /\{%/,
-  /<iframe/i,
-  /<object/i,
-  /<embed/i,
-  /onerror\s*=/i,
-  /onload\s*=/i,
-  /\$\{/,
-  /\\x[0-9a-fA-F]{2}/,
-  /%[0-9a-fA-F]{2}/,
+/**
+ * Content preprocessor ported from
+ * guard_core/detection_engine/preprocessor.py (spec 4.0.2, section 05).
+ *
+ * Pipeline: NFKC + lookalike normalization, the decode chain (percent, HTML
+ * entities, %u, \\x, LDAP \\XX, \\u, base64 candidates with bounded gunzip),
+ * SQL comment stripping, null/control-byte removal, whitespace collapse,
+ * then safe truncation at detection_max_body_inspect_bytes (default 262144)
+ * with attack-region preservation. The 10000-char detection_max_content_length
+ * only bounds the semantic-analysis budget, not the scan content.
+ */
+
+import {
+  decodeHexEscapes,
+  decodeUnicodeEscapes,
+  decodeLdapHexEscapes,
+  decodePercentUEscapes,
+  decodeOverlongUtf8PercentRuns,
+  htmlUnescape,
+  pyUnquote,
+} from './encoding-decoders.js';
+import { decodeBase64Candidates, MAX_GUNZIP_ATTEMPTS_PER_PASS } from './base64-decode.js';
+import { buildShortBase64AdditiveView } from './base64-view.js';
+import {
+  capWithTail,
+  extractAndConcatenateAttackRegions,
+  buildResultWithAttackRegionsAndContext,
+  extractAttackRegions as extractAttackRegionsTruncation,
+} from './truncation.js';
+
+const DEFAULT_MAX_FULL_SCAN_BYTES = 262144;
+
+export const ATTACK_INDICATOR_SOURCES: readonly string[] = [
+  '<script',
+  'javascript:',
+  'on\\w+=',
+  'SELECT\\s+.{0,50}?\\s+FROM',
+  'UNION\\s+SELECT',
+  '\\.\\./',
+  'eval\\s*\\(',
+  'exec\\s*\\(',
+  'system\\s*\\(',
+  '<\\?php',
+  '<%',
+  '{{',
+  '{%',
+  '<iframe',
+  '<object',
+  '<embed',
+  'onerror\\s*=',
+  'onload\\s*=',
+  '\\$\\{',
+  '\\\\x[0-9a-fA-F]{2}',
+  '%[0-9a-fA-F]{2}',
+  '`',
+  '\\$\\(',
+  '[;&|]',
+  '\\b\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\b',
 ];
 
-const LOOKALIKES: Record<string, string> = {
-  '\u2044': '/',
-  '\uff0f': '/',
-  '\u29f8': '/',
-  '\u0130': 'I',
-  '\u0131': 'i',
-  '\u200b': '',
-  '\u200c': '',
-  '\u200d': '',
-  '\ufeff': '',
-  '\u00ad': '',
-  '\u034f': '',
-  '\u180e': '',
-  '\u2028': '\n',
-  '\u2029': '\n',
-  '\ue000': '',
-  '\ufff0': '',
-  '\u01c0': '|',
-  '\u037e': ';',
-  '\u2215': '/',
-  '\u2216': '\\',
-  '\uff1c': '<',
-  '\uff1e': '>',
-};
+const LOOKALIKES: ReadonlyArray<readonly [string, string]> = [
+  ['\u2044', '/'],
+  ['\uff0f', '/'],
+  ['\u29f8', '/'],
+  ['\u0130', 'I'],
+  ['\u0131', 'i'],
+  ['\u200b', ''],
+  ['\u200c', ''],
+  ['\u200d', ''],
+  ['\ufeff', ''],
+  ['\u00ad', ''],
+  ['\u034f', ''],
+  ['\u180e', ''],
+  ['\u2028', '\n'],
+  ['\u2029', '\n'],
+  ['\ue000', ''],
+  ['\ufff0', ''],
+  ['\u01c0', '|'],
+  ['\u037e', ';'],
+  ['\u2215', '/'],
+  ['\u2216', '\\'],
+  ['\uff1c', '<'],
+  ['\uff1e', '>'],
+  ['\uff1b', ';'],
+  ['\uff5c', '|'],
+  ['\uff06', '&'],
+];
 
-const CONTROL_CHARS_RE = /[\x00-\x08\x0b\x0c\x0e-\x1f]/g;
+const SQL_BLOCK_COMMENT_STRIP_RE = /(?<!\w)\/\*(?!!)([\s\S]*?)\*\/|\/\*(?!!)([\s\S]*?)\*\/(?!\w)/g;
+const SQL_LINE_COMMENT_MARKER_RE = /--|#/g;
 
 export class ContentPreprocessor {
-  private readonly maxContentLength: number;
-  private readonly preserveAttackPatterns: boolean;
+  readonly maxContentLength: number;
+  readonly preserveAttackPatterns: boolean;
+  readonly maxFullScanBytes: number;
+  readonly compiledIndicators: RegExp[];
 
-  constructor(maxContentLength = 10000, preserveAttackPatterns = true) {
+  constructor(
+    maxContentLength = 10000,
+    preserveAttackPatterns = true,
+    maxFullScanBytes: number | null = null,
+  ) {
     this.maxContentLength = maxContentLength;
     this.preserveAttackPatterns = preserveAttackPatterns;
+    this.maxFullScanBytes = maxFullScanBytes ?? DEFAULT_MAX_FULL_SCAN_BYTES;
+    this.compiledIndicators = ATTACK_INDICATOR_SOURCES.map((source) => new RegExp(source, 'i'));
   }
 
   normalizeUnicode(content: string): string {
     let normalized = content.normalize('NFKC');
-    for (const [char, replacement] of Object.entries(LOOKALIKES)) {
-      normalized = normalized.replaceAll(char, replacement);
+    for (const [char, replacement] of LOOKALIKES) {
+      normalized = normalized.split(char).join(replacement);
     }
     return normalized;
   }
 
   removeNullBytes(content: string): string {
-    return content.replace(/\x00/g, '').replace(CONTROL_CHARS_RE, '');
+    return content.replace(/\x00/g, '').replace(/[\x01-\x08\x0b\x0c\x0e-\x1f]/g, '');
   }
 
   removeExcessiveWhitespace(content: string): string {
     return content.replace(/\s+/g, ' ').trim();
   }
 
-  decodeCommonEncodings(content: string): string {
-    const maxIterations = 3;
-    let current = content;
-
-    for (let i = 0; i < maxIterations; i++) {
-      const original = current;
-
-      try {
-        const decoded = decodeURIComponent(current);
-        if (decoded !== current) current = decoded;
-      } catch {
-        // partial encoding, ignore
-      }
-
-      try {
-        current = this.decodeHtmlEntities(current);
-      } catch {
-        /* v8 ignore next -- HTML entity decoding fallback; decodeHtmlEntities uses only string ops that cannot throw */
-      }
-
-      if (current === original) break;
-    }
-
-    return current;
-  }
-
-  private decodeHtmlEntities(content: string): string {
-    const entityMap: Record<string, string> = {
-      '&amp;': '&', '&lt;': '<', '&gt;': '>', '&quot;': '"',
-      '&#39;': "'", '&apos;': "'", '&#x27;': "'", '&#x2F;': '/',
-      '&#47;': '/', '&nbsp;': ' ',
-    };
-
-    let result = content;
-    for (const [entity, char] of Object.entries(entityMap)) {
-      result = result.replaceAll(entity, char);
-    }
-
-    result = result.replace(/&#x([0-9a-fA-F]+);/g, (_, hex) =>
-      String.fromCharCode(parseInt(hex, 16)),
-    );
-
-    result = result.replace(/&#(\d+);/g, (_, dec) =>
-      String.fromCharCode(parseInt(dec, 10)),
-    );
-
-    return result;
-  }
-
   extractAttackRegions(content: string): Array<[number, number]> {
-    const maxRegions = Math.min(100, Math.floor(this.maxContentLength / 100));
-    const regions: Array<[number, number]> = [];
+    return extractAttackRegionsTruncation(this, content);
+  }
 
-    for (const indicator of ATTACK_INDICATORS) {
-      const regex = new RegExp(indicator.source, indicator.flags + 'g');
-      let match: RegExpExecArray | null;
+  private extractAndConcatenateAttackRegions(content: string, attackRegions: Array<[number, number]>, budget: number): string {
+    return extractAndConcatenateAttackRegions(content, attackRegions, budget);
+  }
 
-      while ((match = regex.exec(content)) !== null) {
-        if (regions.length >= maxRegions) break;
-        const start = Math.max(0, match.index - 100);
-        const end = Math.min(content.length, match.index + match[0].length + 100);
-        regions.push([start, end]);
-      }
+  private buildResultWithAttackRegionsAndContext(
+    content: string,
+    attackRegions: Array<[number, number]>,
+    budget: number,
+  ): string {
+    return buildResultWithAttackRegionsAndContext(content, attackRegions, budget);
+  }
 
-      if (regions.length >= maxRegions) break;
-    }
-
-    if (regions.length === 0) return [];
-
-    regions.sort((a, b) => a[0] - b[0]);
-
-    const merged: Array<[number, number]> = [regions[0]];
-    for (let i = 1; i < regions.length; i++) {
-      const [start, end] = regions[i];
-      const last = merged[merged.length - 1];
-      if (start <= last[1]) {
-        last[1] = Math.max(last[1], end);
-      } else {
-        merged.push([start, end]);
-      }
-    }
-
-    return merged.slice(0, maxRegions);
+  private capWithTail(content: string): string {
+    return capWithTail(content, this.maxFullScanBytes);
   }
 
   truncateSafely(content: string): string {
-    if (content.length <= this.maxContentLength) return content;
-    if (!this.preserveAttackPatterns) return content.slice(0, this.maxContentLength);
+    const maxFullScanBytes = this.maxFullScanBytes;
+
+    if (content.length <= maxFullScanBytes) return content;
+
+    if (!this.preserveAttackPatterns) return content.slice(0, maxFullScanBytes);
 
     const attackRegions = this.extractAttackRegions(content);
-    if (attackRegions.length === 0) return content.slice(0, this.maxContentLength);
 
-    const attackLength = attackRegions.reduce((sum, [s, e]) => sum + (e - s), 0);
-
-    if (attackLength >= this.maxContentLength) {
-      let result = '';
-      let remaining = this.maxContentLength;
-      for (const [start, end] of attackRegions) {
-        const chunkLen = Math.min(end - start, remaining);
-        result += content.slice(start, start + chunkLen);
-        remaining -= chunkLen;
-        if (remaining <= 0) break;
-      }
-      return result;
+    if (attackRegions.length === 0) {
+      return this.capWithTail(content);
     }
 
-    /* v8 ignore start -- attack-region context assembly requires precise content geometry that tests cannot reproduce */
-    const parts: string[] = [];
-    for (const [start, end] of attackRegions) {
-      parts.push(content.slice(start, end));
+    const attackLength = attackRegions.reduce((sum, [start, end]) => sum + (end - start), 0);
+
+    if (attackLength >= maxFullScanBytes) {
+      return this.extractAndConcatenateAttackRegions(content, attackRegions, maxFullScanBytes);
     }
 
-    let remaining = this.maxContentLength - attackLength;
-    let lastEnd = 0;
-    const contextParts: string[] = [];
-    for (const [start, end] of attackRegions) {
-      if (lastEnd < start && remaining > 0) {
-        const chunkLen = Math.min(start - lastEnd, remaining);
-        contextParts.push(content.slice(lastEnd, lastEnd + chunkLen));
-        remaining -= chunkLen;
-      }
-      lastEnd = end;
-    }
-
-    return [...contextParts, ...parts].join('');
-    /* v8 ignore stop */
+    return this.buildResultWithAttackRegionsAndContext(content, attackRegions, maxFullScanBytes);
   }
 
-  async preprocess(content: string): Promise<string> {
+  stripSqlComments(content: string): string {
+    content = content.replace(SQL_BLOCK_COMMENT_STRIP_RE, (_match, group1: string | undefined, group2: string | undefined) => {
+      return ` ${group1 ?? group2 ?? ''} `;
+    });
+    return content.replace(SQL_LINE_COMMENT_MARKER_RE, ' ');
+  }
+
+  async decodeCommonEncodings(content: string, decodeBudgetExhausted?: { value: boolean }): Promise<string> {
+    const maxDecodeIterations = 16;
+    let iterations = 0;
+    const gunzipAttemptsLeft = { value: MAX_GUNZIP_ATTEMPTS_PER_PASS };
+    let current = content;
+
+    while (iterations < maxDecodeIterations) {
+      const original = current;
+
+      current = decodeOverlongUtf8PercentRuns(current);
+      current = pyUnquote(current);
+      current = htmlUnescape(current);
+      current = decodePercentUEscapes(current);
+      current = decodeHexEscapes(current);
+      current = decodeLdapHexEscapes(current);
+      current = decodeUnicodeEscapes(current);
+      current = this.normalizeUnicode(current);
+      current = await decodeBase64Candidates(current, gunzipAttemptsLeft);
+
+      if (current === original) break;
+
+      iterations += 1;
+    }
+
+    if (iterations >= maxDecodeIterations && decodeBudgetExhausted !== undefined) {
+      decodeBudgetExhausted.value = true;
+    }
+
+    return this.stripSqlComments(current);
+  }
+
+  async preprocessWithDecoded(
+    content: string,
+    decodeBudgetExhausted?: { value: boolean },
+  ): Promise<[string, string]> {
+    if (!content) return ['', ''];
+
+    let decoded = this.normalizeUnicode(content);
+    decoded = await this.decodeCommonEncodings(decoded, decodeBudgetExhausted);
+    let processed = this.removeNullBytes(decoded);
+    processed = this.removeExcessiveWhitespace(processed);
+    processed = this.truncateSafely(processed);
+
+    return [processed, decoded];
+  }
+
+  async preprocess(content: string, decodeBudgetExhausted?: { value: boolean }): Promise<string> {
+    const [processed] = await this.preprocessWithDecoded(content, decodeBudgetExhausted);
+    return processed;
+  }
+
+  preprocessSignalPreserving(content: string): string {
     if (!content) return '';
+    const normalized = this.normalizeUnicode(content);
+    return this.truncateSafely(normalized);
+  }
 
-    let result = this.normalizeUnicode(content);
-    result = this.decodeCommonEncodings(result);
-    result = this.removeNullBytes(result);
-    result = this.removeExcessiveWhitespace(result);
-    result = this.truncateSafely(result);
+  async preprocessUrlDecodedNewlinePreserving(
+    content: string,
+    decodeBudgetExhausted?: { value: boolean },
+  ): Promise<string> {
+    if (!content) return '';
+    let decoded = this.normalizeUnicode(content);
+    decoded = await this.decodeCommonEncodings(decoded, decodeBudgetExhausted);
+    return this.truncateSafely(decoded);
+  }
 
-    return result;
+  preprocessShortBase64AdditiveView(content: string): string {
+    return buildShortBase64AdditiveView(this, content);
   }
 
   async preprocessBatch(contents: string[]): Promise<string[]> {
-    return Promise.all(contents.map((c) => this.preprocess(c)));
+    const results: string[] = [];
+    for (const content of contents) {
+      results.push(await this.preprocess(content));
+    }
+    return results;
   }
 }

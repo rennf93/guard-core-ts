@@ -1,10 +1,42 @@
+import type { IncomingHttpHeaders } from 'http';
 import type { Request } from 'express';
 import type { GuardRequest, GuardRequestState, GuardResponse, GuardResponseFactory } from '@guardcore/core';
 
+function normalizeHeaders(headers: IncomingHttpHeaders): Record<string, string> {
+  const normalized: Record<string, string> = {};
+  for (const [name, value] of Object.entries(headers)) {
+    if (value === undefined) continue;
+    normalized[name] = Array.isArray(value) ? value.join(', ') : String(value);
+  }
+  return normalized;
+}
+
+function normalizeQueryParams(query: Record<string, unknown>): Record<string, string> {
+  const normalized: Record<string, string> = {};
+  for (const [key, value] of Object.entries(query ?? {})) {
+    if (value === undefined || value === null) continue;
+    if (typeof value === 'string') {
+      normalized[key] = value;
+    } else if (Array.isArray(value)) {
+      normalized[key] = value.map((v) => String(v)).join(', ');
+    } else if (typeof value === 'object') {
+      normalized[key] = JSON.stringify(value);
+    } else {
+      normalized[key] = String(value);
+    }
+  }
+  return normalized;
+}
+
 export class NestGuardRequest implements GuardRequest {
   private _state: GuardRequestState = {};
+  private readonly _headers: Readonly<Record<string, string>>;
+  private readonly _queryParams: Readonly<Record<string, string>>;
 
-  constructor(private readonly req: Request) {}
+  constructor(private readonly req: Request) {
+    this._headers = normalizeHeaders(req.headers);
+    this._queryParams = normalizeQueryParams(req.query as Record<string, unknown>);
+  }
 
   get urlPath(): string { return this.req.path; }
   get urlScheme(): string { return this.req.protocol; }
@@ -12,8 +44,8 @@ export class NestGuardRequest implements GuardRequest {
   urlReplaceScheme(scheme: string): string { return this.urlFull.replace(/^https?/, scheme); }
   get method(): string { return this.req.method; }
   get clientHost(): string | null { return this.req.socket.remoteAddress ?? null; }
-  get headers(): Readonly<Record<string, string>> { return this.req.headers as Record<string, string>; }
-  get queryParams(): Readonly<Record<string, string>> { return this.req.query as Record<string, string>; }
+  get headers(): Readonly<Record<string, string>> { return this._headers; }
+  get queryParams(): Readonly<Record<string, string>> { return this._queryParams; }
   async body(): Promise<Uint8Array> {
     const raw = (this.req as unknown as Record<string, unknown>)['rawBody'];
     if (raw instanceof Uint8Array) return raw;
