@@ -112,6 +112,23 @@ function sanitizeForReporting(value: string): string {
   return result;
 }
 
+/**
+ * The reference reports original_length/processed_length as len(content),
+ * i.e. code points (suspatterns_handler.py uses len() on the decoded str).
+ * JS .length counts UTF-16 code units, which overcounts strings containing
+ * astral code points (valid 4-byte UTF-8 sequences inside binary bodies
+ * decode to them), so the reported lengths must count code points.
+ */
+function countCodePoints(text: string): number {
+  let count = 0;
+  for (let i = 0; i < text.length; i++) {
+    const unit = text.charCodeAt(i);
+    if (unit >= 0xd800 && unit < 0xdc00) i++;
+    count++;
+  }
+  return count;
+}
+
 export class SusPatternsManager {
   private preprocessor: ContentPreprocessor;
   private semantic: SemanticAnalyzer;
@@ -353,7 +370,7 @@ export class SusPatternsManager {
     correlationId: string | null = null,
   ): Promise<DetectionResult> {
     const startTime = performance.now();
-    const originalLength = content.length;
+    const originalLength = countCodePoints(content);
 
     const decodeBudgetExhausted = { value: false };
     const [processedContent, decodedContent] = await this.preprocessor.preprocessWithDecoded(
@@ -434,7 +451,7 @@ export class SusPatternsManager {
       timeouts: [],
       correlationId,
       originalLength,
-      processedLength: processedContent.length,
+      processedLength: countCodePoints(processedContent),
     };
   }
 

@@ -236,7 +236,7 @@ async function decodeToken(
   gunzipAttemptsLeft: { value: number },
 ): Promise<string | null> {
   if (isHexLiteral(token)) return null;
-  const cleaned = token.replace(new RegExp(SEPARATOR_STRIP_RE_SOURCE, 'g'), '');
+  const cleaned = token.replace(new RegExp(SEPARATOR_STRIP_RE_SOURCE, 'gu'), '');
   const urlsafeDecoded = await decodeCleaned(
     cleaned.replace(/-/g, '+').replace(/_/g, '/'),
     minPrintableRatio,
@@ -253,7 +253,7 @@ async function decodeRuns(
   token: string,
   gunzipAttemptsLeft: { value: number },
 ): Promise<string> {
-  const runRe = new RegExp(RUN_RE_SOURCE, 'g');
+  const runRe = new RegExp(RUN_RE_SOURCE, 'gu');
   const matches = [...token.matchAll(runRe)];
   if (matches.length === 0) return token;
   let result = '';
@@ -275,11 +275,11 @@ export async function decodeBase64Candidates(
   gunzipAttemptsLeft?: { value: number },
 ): Promise<string> {
   const attempts = gunzipAttemptsLeft ?? { value: MAX_GUNZIP_ATTEMPTS_PER_PASS };
-  const base64Re = new RegExp(BASE64_RE_SOURCE, 'g');
+  const base64Re = new RegExp(BASE64_RE_SOURCE, 'gu');
   const matches = [...content.matchAll(base64Re)];
   if (matches.length === 0) return content;
-  const subFloorRe = new RegExp(SUB_FLOOR_RUN_RE_SOURCE, 'g');
-  const widenedMarkerRe = new RegExp(WIDENED_MARKER_RE_SOURCE);
+  const subFloorRe = new RegExp(SUB_FLOOR_RUN_RE_SOURCE, 'gu');
+  const widenedMarkerRe = new RegExp(WIDENED_MARKER_RE_SOURCE, 'u');
   let result = '';
   let lastEnd = 0;
   for (const match of matches) {
@@ -290,7 +290,7 @@ export async function decodeBase64Candidates(
     const primaryThreshold = widenedMarkerRe.test(token) ? FALLBACK_PRINTABLE_RATIO_THRESHOLD : PRINTABLE_RATIO_THRESHOLD;
     const decoded = await decodeToken(token, primaryThreshold, attempts);
     const base = decoded !== null ? decoded : await decodeRuns(token, attempts);
-    const fragments = [...token.matchAll(new RegExp(subFloorRe.source, 'g'))].map((m) => m[0]).join('');
+    const fragments = [...token.matchAll(new RegExp(subFloorRe.source, 'gu'))].map((m) => m[0]).join('');
     const reassembled =
       fragments.length >= MIN_RUN_LENGTH
         ? await decodeToken(fragments, FALLBACK_PRINTABLE_RATIO_THRESHOLD, attempts)

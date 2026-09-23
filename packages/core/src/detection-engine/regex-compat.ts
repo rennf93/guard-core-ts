@@ -20,11 +20,19 @@
  * - A leading `(?i)` is lifted into the `i` flag. `(?-i:...)` only occurs
  *   in sources without a global `(?i)`; the wrapper is stripped and the
  *   pattern compiles case-sensitively.
- * - Python `\w`, `\d` and `\s` match per Unicode; JS keeps them
- *   ASCII-scoped. This is the documented detection deviation of the port:
- *   payloads are overwhelmingly ASCII and the effect only ever narrows
- *   candidate spans for non-ASCII text.
+ * - Python `\w`, `\d` match per Unicode; JS keeps them ASCII-scoped. This
+ *   is the documented detection deviation of the port: payloads are
+ *   overwhelmingly ASCII and the effect only ever narrows candidate spans
+ *   for non-ASCII text.
+ * - Python `\s` DOES match per Unicode (spec 4.0.3 binary-body corpus): it
+ *   includes U+0085 (NEL) and U+001C-U+001F, which JS \s misses, and it
+ *   excludes U+FEFF, which JS \s matches. The noise-density and shell
+ *   heuristics author `\s*\Z`-style spans over binary padding, so `\s` is
+ *   translated to the reference whitespace class. `\S` inside negated
+ *   classes keeps JS scoping (see the `[^\S\r\n]` header patterns).
  */
+
+const PY_S_CLASS = '[\\t\\n\\v\\f\\r \\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\u0085\\u001c-\\u001f]';
 
 export interface CompiledPythonPattern {
   /** Canonical Python-style source; carried verbatim on threats. */
@@ -60,6 +68,10 @@ function translateSource(source: string, ignoreCase: boolean): { source: string;
         result += '^';
       } else if (next === 'Z') {
         result += '$';
+      } else if (next === 's' && !inClass) {
+        result += PY_S_CLASS;
+        i++;
+        continue;
       } else {
         result += ch + next;
       }
