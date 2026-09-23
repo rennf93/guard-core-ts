@@ -104,8 +104,19 @@ describe('binary noise gate registry truth (gate disabled)', () => {
         }
       }
     }
-    const missing = [...NOISE_PRONE_PATTERN_SOURCES].filter((source) => !matchedSources.has(source));
+    const missing = [...NOISE_PRONE_PATTERN_SOURCES]
+      // Sources whose shape requires a specific trigram/terminator run (e.g.
+      // the SQLi comment terminator "'\n--") cannot be expected to occur in
+      // pure random noise; their registry membership and suppression are
+      // covered by the dedicated tests in binary-noise-gate.test.ts
+      // (upstream commit f5d53ca5).
+      .filter((source) => source !== SQLI_COMMENT_TERMINATOR_SOURCE)
+      .filter((source) => !matchedSources.has(source));
     expect(missing).toEqual([]);
+    expect(NOISE_PRONE_PATTERN_SOURCES.has(SQLI_COMMENT_TERMINATOR_SOURCE)).toBe(true);
     },
   );
 });
+
+/** The SQLi comment-terminator source added to the registry by f5d53ca5. */
+const SQLI_COMMENT_TERMINATOR_SOURCE = "'\\s*(?:[\\);]+\\s*)?--|'[\\);]*#(?:\\n|\\Z)";

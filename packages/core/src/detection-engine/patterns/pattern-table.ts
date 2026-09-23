@@ -182,6 +182,11 @@ export const NOISE_PRONE_PATTERN_SOURCES: ReadonlySet<string> = new Set([
   "\\$\\{[^}]*(?:@[\\w.]+@|\\b\\w+\\s*\\(|\\d+\\s*[*/%+\\-]\\s*\\d+)[^}]*\\}",
   "\\(\\s*[&|]\\s*",
   "\\w+(?:['\\\"]+\\w+){1,10}",
+  // SQLi comment terminators span arbitrary whitespace between the quote and
+  // the -- / # terminator, so they routinely fire inside text-decoded binary
+  // bodies (e.g. "'\n--" byte runs in compressed payloads). Parity with
+  // upstream commit f5d53ca5.
+  "'\\s*(?:[\\);]+\\s*)?--|'[\\);]*#(?:\\n|\\Z)",
 ]);
 
 /** Patterns that only run on the raw signal-preserving view. */
