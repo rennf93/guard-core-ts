@@ -1,4 +1,4 @@
-import * as ipaddr from 'ipaddr.js';
+import ipaddr from 'ipaddr.js';
 import { z } from 'zod';
 
 import type { GeoIPHandler } from '../protocols/geo-ip.js';

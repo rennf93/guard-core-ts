@@ -1,4 +1,4 @@
-import * as ipaddr from 'ipaddr.js';
+import ipaddr from 'ipaddr.js';
 
 import type { ResolvedSecurityConfig } from './models/config.js';
 import type { Logger } from './models/logger.js';
