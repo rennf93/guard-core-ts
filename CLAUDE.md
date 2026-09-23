@@ -181,7 +181,7 @@ Conventions:
 Conformance status (be precise in docs and PRs):
 
 - There is NO conformance suite on master; packages/core/tests contains only the suites listed above
-- A spec 4.0.2 conformance runner with a fail-closed baseline and CI gates exists on branch feat/conformance-runner and is in review as DRAFT PR #47. It is not merged; do not document it as part of master behavior
+- A spec 4.0.3 conformance runner with a fail-closed baseline and CI gates runs against the vendored spec 4.0.3 corpus (conformance/guard-core-spec-4.0.3) with a fail-closed baseline
 
 Known CI state: master CI is currently broken (build, lint, and test jobs fail after the typescript 7 fallout). The fix is in review as DRAFT PR #48 (branch fix/master-ci). PRs branched from master will show these same failures; report them as pre-existing and reference PR #48 instead of trying to fix code.
 

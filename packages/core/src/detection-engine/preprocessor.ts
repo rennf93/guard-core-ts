@@ -89,6 +89,19 @@ const LOOKALIKES: ReadonlyArray<readonly [string, string]> = [
 const SQL_BLOCK_COMMENT_STRIP_RE = /(?<!\w)\/\*(?!!)([\s\S]*?)\*\/|\/\*(?!!)([\s\S]*?)\*\/(?!\w)/g;
 const SQL_LINE_COMMENT_MARKER_RE = /--|#/g;
 
+/**
+ * Python re \s / str.strip() whitespace class (reference
+ * preprocessor.py remove_excessive_whitespace). JS \s differs in both
+ * directions: it misses U+0085 (NEL) and U+001C-U+001F which Python
+ * collapses, and it matches U+FEFF which Python does not. The reference
+ * behavior matters for binary bodies, where NEL and the C0 information
+ * separators are common artifact bytes.
+ */
+const PY_WHITESPACE = '\\t\\n\\v\\f\\r \\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\u0085\\u001c-\\u001f';
+const PY_WHITESPACE_RUN = new RegExp(`[${PY_WHITESPACE}]+`, 'g');
+const PY_WHITESPACE_LEADING = new RegExp(`^[${PY_WHITESPACE}]+`);
+const PY_WHITESPACE_TRAILING = new RegExp(`[${PY_WHITESPACE}]+$`);
+
 export class ContentPreprocessor {
   readonly maxContentLength: number;
   readonly preserveAttackPatterns: boolean;
@@ -119,7 +132,10 @@ export class ContentPreprocessor {
   }
 
   removeExcessiveWhitespace(content: string): string {
-    return content.replace(/\s+/g, ' ').trim();
+    return content
+      .replace(PY_WHITESPACE_RUN, ' ')
+      .replace(PY_WHITESPACE_LEADING, '')
+      .replace(PY_WHITESPACE_TRAILING, '');
   }
 
   extractAttackRegions(content: string): Array<[number, number]> {

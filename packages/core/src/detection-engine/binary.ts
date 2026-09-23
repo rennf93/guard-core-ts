@@ -28,21 +28,29 @@ function isBinaryArtifact(cp: number): boolean {
   return BINARY_ARTIFACT_RANGES.some(([lo, hi]) => cp >= lo && cp <= hi);
 }
 
-/** Cumulative artifact-count prefix: counts[i] = artifacts ending before index i. */
+/**
+ * Cumulative artifact-count prefix: counts[i] = number of artifact code
+ * points ending at or before UTF-16 index i. Mirrors
+ * guard_core/detection_engine/binary_prefix.py build_binary_prefix: the
+ * reference walks regex matches and records each artifact's match.end(); the
+ * port walks code points and records each artifact's actual end index, so
+ * gap (non-artifact) positions keep the previous count. O(n) prep, O(1)
+ * density lookup per candidate match.
+ */
 export function buildBinaryPrefix(text: string): number[] {
   const counts = new Array<number>(text.length + 1).fill(0);
   let count = 0;
-  let filled = 0;
+  let index = 0;
   for (const ch of text) {
-    if (!isBinaryArtifact(ch.codePointAt(0) ?? 0)) continue;
-    count++;
-    const boundary = filled + ch.length;
-    for (let i = filled + 1; i < boundary; i++) counts[i] = count - 1;
-    counts[boundary] = count;
-    filled = boundary;
-  }
-  for (let i = filled; i <= text.length; i++) {
-    counts[i] = count;
+    const len = ch.length;
+    if (len > 1) {
+      // Astral code point: intermediate UTF-16 positions (low surrogate)
+      // keep the current count; no artifact class spans a surrogate pair.
+      for (let k = index + 1; k < index + len; k++) counts[k] = count;
+    }
+    if (isBinaryArtifact(ch.codePointAt(0) ?? 0)) count++;
+    index += len;
+    counts[index] = count;
   }
   return counts;
 }

@@ -188,7 +188,7 @@ Conventions:
 
 Conformance status (be precise in docs and PRs):
 
-- packages/core/tests/conformance/ contains the spec 4.0.2 conformance runner (conformance.test.ts, drift.test.ts, harness.ts); CI runs it via `pnpm --filter @guardcore/core exec vitest run tests/conformance`
+- packages/core/tests/conformance/ contains the spec 4.0.3 conformance runner (conformance.test.ts, drift.test.ts, harness.ts); CI runs it via `pnpm --filter @guardcore/core exec vitest run tests/conformance`
 
 Known CI state: master CI is green (verified on chore/parity-polish: lint, build, and the full vitest suite pass).
 
