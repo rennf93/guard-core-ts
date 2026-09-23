@@ -4,11 +4,11 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import type { SusPatternsManager } from '../../src/handlers/sus-patterns.js';
 
-export const SPEC_VERSION = '4.0.2';
+export const SPEC_VERSION = '4.0.3';
 export const FIXED_IP = '203.0.113.7';
 export const BASELINE_UPDATE_ENV = 'GUARD_CONFORMANCE_UPDATE_BASELINE';
 export const BASELINE_PATH = fileURLToPath(new URL('../../../../conformance/baseline.json', import.meta.url));
-const CORPUS_DIR = fileURLToPath(new URL('../../../../conformance/guard-core-spec-4.0.2/cases/', import.meta.url));
+const CORPUS_DIR = fileURLToPath(new URL('../../../../conformance/guard-core-spec-4.0.3/cases/', import.meta.url));
 const SEMANTIC_PREFIX = 'semantic:';
 
 export class ConformanceError extends Error {
