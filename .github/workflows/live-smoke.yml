@@ -1,0 +1,191 @@
+name: Live Smoke
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: live-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  live-smoke:
+    name: Dockerized smoke run (express example)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+
+    env:
+      LIVE_SMOKE_PROJECT: guard-core-ts-live-smoke
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Bring the smoke stack up (app + redis)
+        run: |
+          docker compose -p "$LIVE_SMOKE_PROJECT" -f examples/express/docker-compose.yml up --build -d --wait
+
+      - name: Run smoke assertions
+        run: |
+          set -euo pipefail
+          base="http://localhost:8080"
+
+          check() {
+            local name="$1" expected="$2"; shift 2
+            local code body
+            body=$(curl -sS --max-time 10 -o /tmp/smoke_body -w '%{http_code}' "$@") || {
+              echo "FAIL: $name (curl error)"; exit 1
+            }
+            code="$body"
+            if [ "$code" != "$expected" ]; then
+              echo "FAIL: $name (expected $expected, got $code)"
+              echo "body: $(cat /tmp/smoke_body)"
+              exit 1
+            fi
+            echo "ok: $name -> $code"
+          }
+
+          check "GET / serves"                 200 "$base/"
+          check "GET /health (excluded path)"  200 "$base/health"
+
+          # Penetration detection: XSS payload in a query parameter is blocked
+          # as suspicious activity (403 default body). Runs first: the request
+          # counts toward the global rate limit window.
+          code=$(curl -sS --max-time 10 -o /tmp/smoke_body -w '%{http_code}' \
+            -G "$base/basic" --data-urlencode 'q=<script>alert(1)</script>')
+          if [ "$code" != "403" ]; then
+            echo "FAIL: XSS query param (expected 403, got $code)"; exit 1
+          fi
+          grep -q "Suspicious activity detected" /tmp/smoke_body || { echo "FAIL: suspicious body"; exit 1; }
+          echo "ok: XSS query param -> 403 suspicious block"
+
+          # Global rate limit: 30 requests per 60 seconds; the 31st request
+          # is rejected by the engine with the default 429 body. Two requests
+          # above already counted, so 28 benign requests stay within limits.
+          for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28; do
+            code=$(curl -sS --max-time 10 -o /dev/null -w '%{http_code}' "$base/basic")
+            if [ "$code" != "200" ]; then
+              echo "FAIL: /basic within global limit (expected 200, got $code)"; exit 1
+            fi
+          done
+          code=$(curl -sS --max-time 10 -o /tmp/smoke_body -w '%{http_code}' "$base/basic")
+          if [ "$code" != "429" ]; then
+            echo "FAIL: /basic 31st request (expected 429, got $code)"; exit 1
+          fi
+          grep -q "Rate limit exceeded" /tmp/smoke_body || { echo "FAIL: rate limit body"; exit 1; }
+          echo "ok: /basic 31st request -> 429 with default body"
+
+      - name: Dump container logs on failure
+        if: failure()
+        run: |
+          docker compose -p "$LIVE_SMOKE_PROJECT" -f examples/express/docker-compose.yml logs --no-color
+
+      - name: Bring the smoke stack down
+        if: always()
+        run: |
+          docker compose -p "$LIVE_SMOKE_PROJECT" -f examples/express/docker-compose.yml down -v --remove-orphans
+
+  live-smoke-advanced:
+    name: Dockerized smoke run (advanced example)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+
+    env:
+      LIVE_SMOKE_PROJECT: guard-core-ts-live-smoke-advanced
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Bring the smoke stack up (app + redis)
+        run: |
+          docker compose -p "$LIVE_SMOKE_PROJECT" -f examples/advanced/docker-compose.yml up --build -d --wait
+
+      - name: Run smoke assertions
+        run: |
+          set -euo pipefail
+          base="http://localhost:8080"
+
+          check() {
+            local name="$1" expected="$2"; shift 2
+            local code body
+            body=$(curl -sS --max-time 10 -o /tmp/smoke_body_adv -w '%{http_code}' "$@") || {
+              echo "FAIL: $name (curl error)"; exit 1
+            }
+            code="$body"
+            if [ "$code" != "$expected" ]; then
+              echo "FAIL: $name (expected $expected, got $code)"
+              echo "body: $(cat /tmp/smoke_body_adv)"
+              exit 1
+            fi
+            echo "ok: $name -> $code"
+          }
+
+          token="admin-token-change-me"
+
+          check "GET / serves"                       200 "$base/"
+          check "GET /health (excluded path)"        200 "$base/health"
+
+          # Admin gate: /admin/keys requires X-Admin-Token; the example app
+          # rejects a missing header with 400 before the handler runs.
+          code=$(curl -sS --max-time 10 -o /tmp/smoke_body_adv -w '%{http_code}' "$base/admin/keys")
+          if [ "$code" != "400" ]; then
+            echo "FAIL: /admin/keys without token (expected 400, got $code)"; exit 1
+          fi
+          grep -q "Missing or invalid required header: X-Admin-Token" /tmp/smoke_body_adv || {
+            echo "FAIL: missing-token body"; exit 1
+          }
+          echo "ok: /admin/keys without token -> 400 missing required header"
+
+          check "GET /admin/keys with token"         200 -H "X-Admin-Token: $token" "$base/admin/keys"
+
+          # Per-endpoint rate limit: /rate/burst allows 5 requests per 60
+          # seconds; the custom 429 body overrides the default message.
+          for _ in 1 2 3 4 5; do
+            code=$(curl -sS --max-time 10 -o /dev/null -w '%{http_code}' "$base/rate/burst")
+            if [ "$code" != "200" ]; then
+              echo "FAIL: /rate/burst within limit (expected 200, got $code)"; exit 1
+            fi
+          done
+          code=$(curl -sS --max-time 10 -o /tmp/smoke_body_adv -w '%{http_code}' "$base/rate/burst")
+          if [ "$code" != "429" ]; then
+            echo "FAIL: /rate/burst 6th request (expected 429, got $code)"; exit 1
+          fi
+          grep -q "Rate limit exceeded, slow down" /tmp/smoke_body_adv || { echo "FAIL: custom 429 body"; exit 1; }
+          echo "ok: /rate/burst 6th request -> 429 with custom body"
+
+          # Penetration detection: XSS payload in a query parameter is blocked
+          # as suspicious activity (403 default body; customErrorResponses
+          # only tunes 429 here).
+          code=$(curl -sS --max-time 10 -o /tmp/smoke_body_adv -w '%{http_code}' \
+            -G "$base/search" --data-urlencode 'q=<script>alert(1)</script>')
+          if [ "$code" != "403" ]; then
+            echo "FAIL: XSS query param (expected 403, got $code)"; exit 1
+          fi
+          grep -q "Suspicious activity detected" /tmp/smoke_body_adv || { echo "FAIL: suspicious body"; exit 1; }
+          echo "ok: XSS query param -> 403 suspicious block"
+
+      - name: Dump container logs on failure
+        if: failure()
+        run: |
+          docker compose -p "$LIVE_SMOKE_PROJECT" -f examples/advanced/docker-compose.yml logs --no-color
+
+      - name: Bring the smoke stack down
+        if: always()
+        run: |
+          docker compose -p "$LIVE_SMOKE_PROJECT" -f examples/advanced/docker-compose.yml down -v --remove-orphans

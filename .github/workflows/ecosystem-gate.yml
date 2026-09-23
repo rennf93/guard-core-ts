@@ -1,0 +1,115 @@
+name: Ecosystem Gate
+
+on:
+  pull_request:
+    branches:
+      - master
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+
+concurrency:
+  group: ecosystem-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  monorepo-gate:
+    name: Turbo build + test (all packages)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build every package (turbo, dependency order)
+        run: pnpm build
+
+      - name: Test every package (turbo, Redis-backed)
+        run: pnpm test
+        env:
+          REDIS_URL: redis://localhost:6379
+
+      - name: Spec conformance suite
+        run: pnpm --filter @guardcore/core exec vitest run tests/conformance
+        env:
+          REDIS_URL: redis://localhost:6379
+
+  pack-smoke:
+    name: pnpm pack + install smoke (@guardcore/core)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies and build core
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm --filter @guardcore/core build
+
+      - name: Pack @guardcore/core
+        run: |
+          mkdir -p /tmp/pack
+          cd packages/core
+          pnpm pack --pack-destination /tmp/pack
+          ls -la /tmp/pack
+
+      - name: Install the tarball into a scratch project and exercise the API
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/scratch
+          cd /tmp/scratch
+          printf '{"name":"ecosystem-gate-scratch","private":true,"type":"module"}\n' > package.json
+          pnpm add /tmp/pack/guardcore-core-*.tgz
+          node --input-type=module -e "
+            import { SecurityConfigSchema, defaultLogger } from '@guardcore/core';
+            const config = SecurityConfigSchema.parse({});
+            if (config.rateLimit !== 10 || config.rateLimitWindow !== 60) {
+              throw new Error('unexpected defaults: ' + JSON.stringify([config.rateLimit, config.rateLimitWindow]));
+            }
+            if (typeof defaultLogger.info !== 'function') {
+              throw new Error('defaultLogger malformed');
+            }
+            console.log('pack smoke ok: @guardcore/core imports and validates config');
+          "
