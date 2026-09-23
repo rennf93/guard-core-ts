@@ -14,7 +14,6 @@ const configInput = {
   trustedProxyDepth: 1,
   trustXForwardedProto: true,
 
-  blockCloudProviders: ['AWS', 'GCP', 'Azure'],
   blockedUserAgents: ['badbot', 'evil-crawler', 'sqlmap'],
 
   enableRateLimiting: true,
