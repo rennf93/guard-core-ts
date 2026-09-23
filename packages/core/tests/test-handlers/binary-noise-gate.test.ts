@@ -23,6 +23,10 @@
 import { describe, it, expect } from 'vitest';
 import { SusPatternsManager } from '../../src/handlers/sus-patterns.js';
 import { NOISE_PRONE_PATTERN_SOURCES } from '../../src/detection-engine/patterns/pattern-table.js';
+import { _SQLI_COMMENT_TERMINATOR_RE } from '../../src/detection-engine/patterns/canonical-sources.generated.js';
+import { buildRegexThreat, getCompiledPatterns } from '../../src/detection-engine/patterns/index.js';
+import { buildBinaryPrefix } from '../../src/detection-engine/binary.js';
+import { compilePythonPattern } from '../../src/detection-engine/regex-compat.js';
 import { createTestConfig } from '../helpers.js';
 import { defaultLogger } from '../../src/models/logger.js';
 
@@ -316,9 +320,61 @@ describe('binary noise gate (spec 4.0.3 honesty tests)', () => {
   });
 
   it('noise-prone registry is non-empty and covers the 4.0.3 sources', () => {
-    // Sanity pin: the frozen 4.0.3 registry holds the nine low-specificity
+    // Sanity pin: the frozen 4.0.3 registry holds the ten low-specificity
     // shell-source heuristics (backtick pairs, dollar substitutions, quote
-    // splice, glob wildcards, template fragments, LDAP paren conjunction).
-    expect(NOISE_PRONE_PATTERN_SOURCES.size).toBe(9);
+    // splice, glob wildcards, template fragments, LDAP paren conjunction,
+    // SQLi comment terminators, f5d53ca5).
+    expect(NOISE_PRONE_PATTERN_SOURCES.size).toBe(10);
+  });
+
+  it('PDF comment line with SQLi terminator bytes is not flagged', async () => {
+    // Regression for the real-world 558KB-PDF false positive (guard-core
+    // f5d53ca5): a PDF header whose binary comment region contains an
+    // apostrophe, a newline and dashes must not be reported as SQLi.
+    const manager = createManager();
+    const pdfPrefix = '%PDF-1.4\n%\xc7\x8f\xa2\n7 0 obj\n<</Length 8 0 R/Filter /FlateDecode>>\nstream\n';
+    // Latin-1 byte encode so the raw bytes match the reference fixture
+    // (b"%PDF-1.4\n%\xc7\x8f\xa2\n...") instead of UTF-8 re-encoding them.
+    const prefixBytes = new Uint8Array([...pdfPrefix].map((c) => c.charCodeAt(0) & 0xff));
+    const buffer = new Uint8Array(prefixBytes.length + 2000);
+    buffer.set(prefixBytes, 0);
+    buffer.set(noiseBytes(11).slice(0, 2000), prefixBytes.length);
+    buffer.set([0x27, 0x0a, 0x2d, 0x2d], 100);
+    const payload = utf8DecodeSurrogateescape(buffer);
+    const result = await detect(manager, payload);
+    expect(result.isThreat).toBe(false);
+    expect(result.threats).toEqual([]);
+  });
+
+  it('ASCII SQLi comment terminator outside binary is still detected', async () => {
+    // detect() does not expose per-threat category (see the conformance
+    // harness notes), so assert the sqli signal via the comment-terminator
+    // pattern itself.
+    const manager = createManager();
+    const result = await detect(manager, "users?name=1=1' \n-- drop table users");
+    expect(result.isThreat).toBe(true);
+    expect(result.threats.some((t) => t.pattern === _SQLI_COMMENT_TERMINATOR_RE)).toBe(true);
+  });
+
+  it('SQLi comment-terminator source is noise gated', () => {
+    // The SQLi comment-terminator source is registered as noise-prone: a
+    // match whose neighborhood is binary-dense must be dropped by
+    // buildRegexThreat, while the same match in ASCII surroundings survives
+    // (covered by the still-detected test above).
+    const source = "'\\s*(?:[\\);]+\\s*)?--|'[\\);]*#(?:\\n|\\Z)";
+    const entry = getCompiledPatterns().find((e) => e.source === source);
+    expect(entry).toBeDefined();
+
+    const denseNoise = decodedNoise(11, 'surrogateescape').slice(0, 200);
+    const text = `abc \n' \n--${denseNoise}`;
+    const compiled = compilePythonPattern(source, true);
+    compiled.re.lastIndex = 5;
+    const match = compiled.re.exec(text);
+    expect(match).not.toBeNull();
+    expect(match?.[0]).toBe("' \n--");
+
+    const prefix = buildBinaryPrefix(text);
+    expect(buildRegexThreat(compiled, match as RegExpExecArray, 'sqli', 'request_body', prefix)).toBeNull();
+    expect(buildRegexThreat(compiled, match as RegExpExecArray, 'sqli', 'request_body', null)).not.toBeNull();
   });
 });
