@@ -6,7 +6,7 @@ import {
   SecurityDecorator,
 } from '@guardcore/hono';
 
-const config = SecurityConfigSchema.parse({
+const configInput = {
   blockedUserAgents: ['badbot', 'sqlmap'],
 
   enableRateLimiting: true,
@@ -26,13 +26,15 @@ const config = SecurityConfigSchema.parse({
   corsAllowOrigins: ['*'],
 
   excludePaths: ['/health'],
-});
+};
+
+const config = SecurityConfigSchema.parse(configInput);
 
 const guard = new SecurityDecorator(config);
 const app = new Hono();
 
 configureCors(app, config);
-app.use('*', createGuardMiddleware({ config, guardDecorator: guard }));
+app.use('*', createGuardMiddleware({ config: configInput, guardDecorator: guard }));
 
 app.get('/health', (c) => c.json({ status: 'healthy' }));
 

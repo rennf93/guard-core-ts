@@ -6,7 +6,7 @@ import {
   SecurityDecorator,
 } from '@guardcore/fastify';
 
-const config = SecurityConfigSchema.parse({
+const configInput = {
   blacklist: ['192.168.100.0/24'],
   trustedProxies: ['172.16.0.0/12', '10.0.0.0/8'],
   blockedUserAgents: ['badbot', 'sqlmap'],
@@ -36,14 +36,16 @@ const config = SecurityConfigSchema.parse({
   corsAllowOrigins: ['http://localhost:3000'],
 
   excludePaths: ['/health'],
-});
+};
+
+const config = SecurityConfigSchema.parse(configInput);
 
 const guard = new SecurityDecorator(config);
 const app = Fastify({ logger: true });
 
 async function start() {
   await configureCors(app, config);
-  await app.register(guardPlugin, { config, guardDecorator: guard });
+  await app.register(guardPlugin, { config: configInput, guardDecorator: guard });
 
   app.get('/health', async () => ({ status: 'healthy' }));
 

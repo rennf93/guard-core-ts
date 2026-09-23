@@ -2,9 +2,19 @@
 
 ## Running
 
+With Docker Compose (app plus Redis, with healthchecks):
+
 ```bash
-npm install fastify @guardcore/core @guardcore/fastify
-docker run -d -p 6379:6379 redis:7-alpine
+cd examples/fastify
+docker compose up --build
+```
+
+The app listens on port 8080 in compose and on port 3000 when run directly.
+
+Or directly from the repo root (after `pnpm install` and `pnpm build`):
+
+```bash
+cd examples/fastify
 npx tsx app.ts
 ```
 
