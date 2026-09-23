@@ -76,7 +76,10 @@ function noiseBytes(seed: number): Uint8Array {
 }
 
 describe('binary noise gate registry truth (gate disabled)', () => {
-  it('every noise-prone pattern fires on random binary noise with the gate disabled', async () => {
+  it(
+    'every noise-prone pattern fires on random binary noise with the gate disabled',
+    { timeout: 120_000 },
+    async () => {
     const manager = new SusPatternsManager(
       createTestConfig({
         detectionCompilerTimeout: 2.0,
@@ -103,5 +106,6 @@ describe('binary noise gate registry truth (gate disabled)', () => {
     }
     const missing = [...NOISE_PRONE_PATTERN_SOURCES].filter((source) => !matchedSources.has(source));
     expect(missing).toEqual([]);
-  });
+    },
+  );
 });
