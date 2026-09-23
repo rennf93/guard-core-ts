@@ -26,14 +26,15 @@
     "@guardcore/core": "workspace:*"
   },
   "devDependencies": {
+    "@fastify/cors": "^11.0.0",
+    "fastify": "^5",
     "tsup": "^8",
-    "vitest": "^4",
     "typescript": "~5.9",
-    "fastify": "^5"
+    "vitest": "^4"
   },
   "peerDependencies": {
     "fastify": "^5",
-    "@fastify/cors": "^9"
+    "@fastify/cors": "^9 || ^10 || ^11"
   },
   "peerDependenciesMeta": {
     "@fastify/cors": {

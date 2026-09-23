@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { GuardModule } from '@guardcore/nestjs';
+import { AppController } from './app.controller.js';
 
 @Module({
   imports: [
@@ -29,5 +30,6 @@ import { GuardModule } from '@guardcore/nestjs';
       },
     }),
   ],
+  controllers: [AppController],
 })
 export class AppModule {}

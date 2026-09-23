@@ -1,0 +1,23 @@
+services:
+  hono-app:
+    build:
+      context: ../..
+      dockerfile: examples/hono/Dockerfile
+    image: guard-core-ts-hono-example:local
+    ports:
+      - "8080:8080"
+    environment:
+      - PORT=8080
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 256M
+

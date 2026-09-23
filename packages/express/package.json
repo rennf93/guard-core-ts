@@ -26,10 +26,11 @@
     "@guardcore/core": "workspace:*"
   },
   "devDependencies": {
+    "@types/express": "^5",
+    "cors": "^2.8.5",
     "tsup": "^8",
-    "vitest": "^4",
     "typescript": "~5.9",
-    "@types/express": "^5"
+    "vitest": "^4"
   },
   "peerDependencies": {
     "express": "^4 || ^5",

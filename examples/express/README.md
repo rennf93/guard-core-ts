@@ -2,14 +2,19 @@
 
 ## Running
 
+With Docker Compose (app plus Redis, with healthchecks):
+
 ```bash
-# Install dependencies
-npm install express @guardcore/core @guardcore/express
+cd examples/express
+docker compose up --build
+```
 
-# Start Redis
-docker run -d -p 6379:6379 redis:7-alpine
+The app listens on port 8080 in compose and on port 3000 when run directly.
 
-# Run the example
+Or directly from the repo root (after `pnpm install` and `pnpm build`):
+
+```bash
+cd examples/express
 npx tsx app.ts
 ```
 

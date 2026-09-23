@@ -8,13 +8,12 @@ import {
   BehaviorRule,
 } from '@guardcore/express';
 
-const config = SecurityConfigSchema.parse({
+const configInput = {
   blacklist: ['192.168.100.0/24'],
   trustedProxies: ['172.16.0.0/12', '10.0.0.0/8'],
   trustedProxyDepth: 1,
   trustXForwardedProto: true,
 
-  blockCloudProviders: ['AWS', 'GCP', 'Azure'],
   blockedUserAgents: ['badbot', 'evil-crawler', 'sqlmap'],
 
   enableRateLimiting: true,
@@ -49,14 +48,16 @@ const config = SecurityConfigSchema.parse({
   corsAllowCredentials: true,
 
   excludePaths: ['/health'],
-});
+};
+
+const config = SecurityConfigSchema.parse(configInput);
 
 const guard = new SecurityDecorator(config);
 const app = express();
 
 app.use(guardBodyParser());
 configureCors(app, config);
-app.use(createSecurityMiddleware({ config, guardDecorator: guard }));
+app.use(createSecurityMiddleware({ config: configInput, guardDecorator: guard }));
 
 app.get('/health', (_req, res) => {
   res.json({ status: 'healthy' });

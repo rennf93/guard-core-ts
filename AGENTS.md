@@ -89,9 +89,17 @@ Makefile targets (verified in ./Makefile):
 - `make bump-version VERSION=x.y.z` - bump all package versions via .github/scripts/bump-version.mjs (fails without VERSION)
 - `make prune` - delete node_modules, dist, and .turbo directories
 - `make serve-docs` / `make build-docs` - run the Astro docs site in docs/ (astro dev / astro build)
+- Live smoke (dockerized example run, mirrors .github/workflows/live-smoke.yml):
+
+```bash
+docker compose -p guard-core-ts-live-smoke -f examples/express/docker-compose.yml up --build -d --wait
+# assert: GET / 200, GET /health 200, XSS query param 403 "Suspicious activity detected",
+# 31st request 429 "Rate limit exceeded"
+docker compose -p guard-core-ts-live-smoke -f examples/express/docker-compose.yml down -v --remove-orphans
+```
 - `make stop` / `make restart` - docker compose down / up -d (compose.yml)
 
-CI runs (verified in .github/workflows/ci.yml): pnpm install --frozen-lockfile, pnpm build, pnpm lint on node 22, and pnpm test on a node 18/20/22 matrix with a redis service (REDIS_URL=redis://localhost:6379).
+CI runs (verified in .github/workflows/ci.yml): pnpm install --frozen-lockfile, pnpm build, pnpm lint on node 22, and pnpm test on a node 18/20/22 matrix with a redis service (REDIS_URL=redis://localhost:6379). Other Actions: .github/workflows/issue-link.yml enforces a "Closes #N" link (or the no-issue label) on PRs, .github/workflows/live-smoke.yml runs dockerized compose smokes of the Express and advanced examples, and .github/workflows/ecosystem-gate.yml gates the monorepo (turbo build + test + conformance, plus a pnpm pack + install smoke of @guardcore/core into a scratch project).
 
 ## Project Structure
 
@@ -124,10 +132,10 @@ guardcore-ts/
 |  |- hono/                           @guardcore/hono (createGuardMiddleware, edge-safe)
 |  |- nestjs/                         @guardcore/nestjs (GuardModule.forRoot, SecurityMiddlewareNest)
 |- docs/                              Astro + Starlight documentation site (own package-lock.json)
-|- examples/                          runnable apps: express, fastify, hono, nestjs
+|- examples/                          runnable apps (pnpm workspace members): express, fastify, hono, nestjs, advanced
 |- fixtures/                          currently an empty placeholder on master
 |- .github/scripts/bump-version.mjs   used by make bump-version
-|- .github/workflows/                 ci.yml, codeql.yml, release.yml, docs.yml, scheduled-lint.yml, ...
+|- .github/workflows/                 ci.yml, codeql.yml, release.yml, docs.yml, scheduled-lint.yml, issue-link.yml, live-smoke.yml, ecosystem-gate.yml, ...
 |- compose.yml, Dockerfile, Makefile, turbo.json, pnpm-workspace.yaml, tsconfig.base.json
 ```
 
@@ -180,10 +188,9 @@ Conventions:
 
 Conformance status (be precise in docs and PRs):
 
-- There is NO conformance suite on master; packages/core/tests contains only the suites listed above
-- A spec 4.0.2 conformance runner with a fail-closed baseline and CI gates exists on branch feat/conformance-runner and is in review as DRAFT PR #47. It is not merged; do not document it as part of master behavior
+- packages/core/tests/conformance/ contains the spec 4.0.2 conformance runner (conformance.test.ts, drift.test.ts, harness.ts); CI runs it via `pnpm --filter @guardcore/core exec vitest run tests/conformance`
 
-Known CI state: master CI is currently broken (build, lint, and test jobs fail after the typescript 7 fallout). The fix is in review as DRAFT PR #48 (branch fix/master-ci). PRs branched from master will show these same failures; report them as pre-existing and reference PR #48 instead of trying to fix code.
+Known CI state: master CI is green (verified on chore/parity-polish: lint, build, and the full vitest suite pass).
 
 ## Code Quality Standards
 
@@ -227,4 +234,4 @@ From tsconfig.base.json and CONTRIBUTING.md (both enforced by CI):
 
 - guard-core (https://github.com/rennf93/guard-core) - the Python engine this repo ports; upstream reference for behavior and patterns
 - In-repo adapters: @guardcore/express, @guardcore/fastify, @guardcore/hono, @guardcore/nestjs (each under packages/ with its own tests and examples/ apps)
-- examples/ contains a runnable app per adapter showing configuration with SecurityConfigSchema.parse
+- examples/ contains a runnable app per adapter (express, fastify, hono, nestjs) plus examples/advanced/ (env-driven SecurityConfig, endpointRateLimits with a custom 429 body, admin header gate); each example is a pnpm workspace member with a Dockerfile and docker-compose.yml; adapter middleware does not populate request.state.guardRouteId yet, so per-route SecurityDecorator configs are not resolved through the middleware at runtime

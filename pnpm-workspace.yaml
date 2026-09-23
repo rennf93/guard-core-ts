@@ -1,5 +1,6 @@
 packages:
   - packages/*
+  - examples/*
 
 ignoredBuiltDependencies:
   - esbuild
@@ -36,6 +37,11 @@ auditConfig:
     - GHSA-v2hh-gcrm-f6hx
     - GHSA-w2qp-rph6-63g4
     # via hono peer/devDep; adapter test tooling only; raise hono peer range in a dependency refresh
+    # via examples/nestjs > @nestjs/platform-express > multer; example-app dependency only
+    - GHSA-wc9g-mqfw-jrwm
+    - GHSA-qfvm-cv95-jqjf
+    - GHSA-535w-7cp7-47q4
+    - GHSA-qvfw-j98x-7q72
     - GHSA-54fx-42gc-7vw4
     - GHSA-79qm-7rj5-m7r9
     - GHSA-8j4g-w8fx-2239

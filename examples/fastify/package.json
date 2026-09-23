@@ -1,0 +1,18 @@
+{
+  "name": "@guardcore-examples/fastify",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "tsx app.ts"
+  },
+  "dependencies": {
+    "@guardcore/core": "workspace:*",
+    "@guardcore/fastify": "workspace:*",
+    "@fastify/cors": "^11.0.0",
+    "fastify": "^5.0.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.20.6"
+  }
+}

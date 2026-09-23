@@ -1,5 +1,26 @@
 # @guardcore/nestjs Example
 
+## Running
+
+With Docker Compose (app plus Redis, with healthchecks):
+
+```bash
+cd examples/nestjs
+docker compose up --build
+```
+
+The app listens on port 8080 in compose and on port 3000 when run directly.
+
+Or directly from the repo root (after `pnpm install` and `pnpm build`):
+
+```bash
+cd examples/nestjs
+npx tsx main.ts
+```
+
+`main.ts` bootstraps `AppModule` (which registers `GuardModule.forRoot` and
+an `AppController` serving `/`, `/health`, and `/basic`).
+
 ## Setup
 
 ```bash
