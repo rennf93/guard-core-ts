@@ -11,6 +11,8 @@
 
 TypeScript port of [guard-core](https://github.com/rennf93/guard-core) — the engine that powers the Guard security ecosystem. All shared security logic lives here. Framework-specific adapters wire it into Express, Fastify, NestJS, and Hono.
 
+Docs: https://rennf93.github.io/guard-core-ts/
+
 ## Ecosystem
 
 ```
