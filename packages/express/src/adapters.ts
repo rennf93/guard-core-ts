@@ -67,7 +67,10 @@ export class ExpressGuardResponse implements GuardResponse {
     content: string,
   ) {
     this._body = new TextEncoder().encode(content);
-    this._headers['content-type'] = 'application/json';
+    /* Block and error responses are plain text like the Python family
+       (fastapi-guard #144): the message itself, not JSON-wrapped. A custom
+       response modifier can still override the content type. */
+    this._headers['content-type'] = 'text/plain; charset=utf-8';
   }
 
   get headers(): Record<string, string> { return this._headers; }
@@ -80,7 +83,7 @@ export class ExpressGuardResponse implements GuardResponse {
 
 export class ExpressResponseFactory implements GuardResponseFactory {
   createResponse(content: string, statusCode: number): GuardResponse {
-    return new ExpressGuardResponse(statusCode, JSON.stringify({ detail: content }));
+    return new ExpressGuardResponse(statusCode, content);
   }
 
   createRedirectResponse(url: string, statusCode: number): GuardResponse {

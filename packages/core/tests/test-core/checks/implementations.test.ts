@@ -36,7 +36,7 @@ function createMockValidator(isHttps = true, withinWindow = true) {
 function createMockErrorResponseFactory() {
   return {
     createErrorResponse: vi.fn().mockImplementation(async (statusCode: number, message: string) =>
-      createMockResponse(statusCode, JSON.stringify({ detail: message })),
+      createMockResponse(statusCode, message),
     ),
     createHttpsRedirect: vi.fn().mockImplementation(async (request: { urlReplaceScheme: (s: string) => string }) => {
       const resp = createMockResponse(301, '');

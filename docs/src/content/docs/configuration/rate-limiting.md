@@ -111,12 +111,11 @@ TTL: `window * 2` seconds
 
 ## Rate Limit Response
 
-When a client exceeds their limit, the middleware returns:
+When a client exceeds their limit, the middleware returns a plain-text body
+(`text/plain; charset=utf-8`):
 
-```json
-{
-  "detail": "Rate limit exceeded"
-}
+```text
+Rate limit exceeded
 ```
 
 Status code: `429 Too Many Requests`

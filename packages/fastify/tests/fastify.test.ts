@@ -156,9 +156,9 @@ describe('FastifyGuardResponse', () => {
     expect(response.bodyText).toBe('{"ok":true}');
   });
 
-  it('sets content-type header to application/json', () => {
+  it('sets content-type header to text/plain', () => {
     const response = new FastifyGuardResponse(200, 'test');
-    expect(response.headers['content-type']).toBe('application/json');
+    expect(response.headers['content-type']).toBe('text/plain; charset=utf-8');
   });
 
   it('setHeader adds headers', () => {
@@ -180,10 +180,10 @@ describe('FastifyResponseFactory', () => {
     factory = new FastifyResponseFactory();
   });
 
-  it('creates a response with detail JSON', () => {
+  it('creates a plain-text response carrying the message itself', () => {
     const response = factory.createResponse('Forbidden', 403);
     expect(response.statusCode).toBe(403);
-    expect(response.bodyText).toBe(JSON.stringify({ detail: 'Forbidden' }));
+    expect(response.bodyText).toBe('Forbidden');
   });
 
   it('creates a redirect response with location header', () => {

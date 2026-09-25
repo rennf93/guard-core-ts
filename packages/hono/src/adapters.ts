@@ -28,7 +28,10 @@ export class HonoGuardResponse implements GuardResponse {
 
   constructor(readonly statusCode: number, content: string) {
     this._body = new TextEncoder().encode(content);
-    this._headers['content-type'] = 'application/json';
+    /* Block and error responses are plain text like the Python family
+       (fastapi-guard #144): the message itself, not JSON-wrapped. A custom
+       response modifier can still override the content type. */
+    this._headers['content-type'] = 'text/plain; charset=utf-8';
   }
 
   get headers(): Record<string, string> { return this._headers; }
@@ -39,7 +42,7 @@ export class HonoGuardResponse implements GuardResponse {
 
 export class HonoResponseFactory implements GuardResponseFactory {
   createResponse(content: string, statusCode: number): GuardResponse {
-    return new HonoGuardResponse(statusCode, JSON.stringify({ detail: content }));
+    return new HonoGuardResponse(statusCode, content);
   }
 
   createRedirectResponse(url: string, statusCode: number): GuardResponse {

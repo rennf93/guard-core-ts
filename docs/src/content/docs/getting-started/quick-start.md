@@ -30,7 +30,7 @@ curl http://localhost:3000/health
 # {"status":"ok"}
 
 curl "http://localhost:3000/health?q=<script>alert(1)</script>"
-# {"detail":"Suspicious activity detected"}
+# Suspicious activity detected
 ```
 
 ## Fastify
