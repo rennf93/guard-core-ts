@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { sanitizeForLog, extractClientIp, isIpAllowed, isUserAgentAllowed, logActivity, detectPenetrationAttempt, checkIpCountry } from '../../src/utils.js';
+import { sanitizeForLog, extractClientIp, isIpAllowed, isUserAgentAllowed, logActivity, detectPenetrationAttempt, scanRequestWithManager, checkIpCountry } from '../../src/utils.js';
 import {
   checkCountryAccess,
   checkRouteIpAccess,
@@ -214,13 +214,17 @@ function createMockGeoIpHandler(countryMap: Record<string, string> = {}): GeoIPH
 }
 
 describe('detectPenetrationAttempt', () => {
+  /* Trigger strings mirror the reference value routing
+     (guard_core/_utils/detection_scan.py): each surface names the component
+     that matched, e.g. "Query param 'q': ..." rather than the old
+     "Suspicious query_params: ..." shortcut format. */
   it('detects XSS in query params', async () => {
     const request = createMockRequest({
       queryParams: { q: '<script>alert(1)</script>' },
     });
     const [isThreat, info] = await detectPenetrationAttempt(request);
     expect(isThreat).toBe(true);
-    expect(info).toContain('query_params');
+    expect(info).toContain("Query param 'q':");
   });
 
   it('detects path traversal in URL path', async () => {
@@ -229,7 +233,7 @@ describe('detectPenetrationAttempt', () => {
     });
     const [isThreat, info] = await detectPenetrationAttempt(request);
     expect(isThreat).toBe(true);
-    expect(info).toContain('url_path');
+    expect(info).toContain('URL path:');
   });
 
   it('detects malicious header value', async () => {
@@ -241,7 +245,7 @@ describe('detectPenetrationAttempt', () => {
     });
     const [isThreat, info] = await detectPenetrationAttempt(request);
     expect(isThreat).toBe(true);
-    expect(info).toContain('header');
+    expect(info).toContain("Header 'x-custom':");
   });
 
   it('returns false for clean request', async () => {
@@ -272,7 +276,7 @@ describe('detectPenetrationAttempt', () => {
     });
     const [isThreat, info] = await detectPenetrationAttempt(request);
     expect(isThreat).toBe(true);
-    expect(info).toContain('query_params');
+    expect(info).toContain("Query param 'id':");
   });
 
   it('handles body read failure gracefully', async () => {
@@ -283,6 +287,176 @@ describe('detectPenetrationAttempt', () => {
       body: async () => { throw new Error('read error'); },
     });
     const [isThreat] = await detectPenetrationAttempt(request);
+    expect(isThreat).toBe(false);
+  });
+});
+
+describe('scanRequestWithManager engine routing', () => {
+  /* Real-manager tests: the value routing must reach the full pattern table
+     with the reference contexts. */
+  it('blocks attacks carried in a query param NAME', async () => {
+    const { SusPatternsManager } = await import('../../src/handlers/sus-patterns.js');
+    const manager = new SusPatternsManager(createTestConfig(), defaultLogger);
+    const [isThreat, info] = await scanRequestWithManager(
+      manager,
+      createMockRequest({ queryParams: { '<img src=x onerror=alert(1)>': '1' } }),
+    );
+    expect(isThreat).toBe(true);
+    expect(info).toContain('Query param name');
+  });
+
+  it('blocks attack leaves inside root-array JSON bodies', async () => {
+    const { SusPatternsManager } = await import('../../src/handlers/sus-patterns.js');
+    const manager = new SusPatternsManager(createTestConfig(), defaultLogger);
+    const body = new TextEncoder().encode(JSON.stringify([{ comment: '<img src=x onerror=alert(1)>' }]));
+    const [isThreat, info] = await scanRequestWithManager(
+      manager,
+      createMockRequest({
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: async () => body,
+      }),
+    );
+    expect(isThreat).toBe(true);
+    expect(info).toContain("Request body field 'comment':");
+  });
+
+  it('detects attacks below the JSON depth cap through the serialized subtree', async () => {
+    const { SusPatternsManager } = await import('../../src/handlers/sus-patterns.js');
+    const manager = new SusPatternsManager(createTestConfig(), defaultLogger);
+    let node: Record<string, unknown> = { payload: '<img src=x onerror=alert(1)>' };
+    for (let i = 0; i < 35; i++) node = { nested: node };
+    const body = new TextEncoder().encode(JSON.stringify(node));
+    const [isThreat] = await scanRequestWithManager(
+      manager,
+      createMockRequest({
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: async () => body,
+      }),
+    );
+    expect(isThreat).toBe(true);
+  });
+
+  it('blob-scans non-JSON bodies sent with a json content type', async () => {
+    const { SusPatternsManager } = await import('../../src/handlers/sus-patterns.js');
+    const manager = new SusPatternsManager(createTestConfig(), defaultLogger);
+    const body = new TextEncoder().encode('not json but <img src=x onerror=alert(1)>');
+    const [isThreat] = await scanRequestWithManager(
+      manager,
+      createMockRequest({
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: async () => body,
+      }),
+    );
+    expect(isThreat).toBe(true);
+  });
+
+  it('blob-scans scalar JSON bodies', async () => {
+    const { SusPatternsManager } = await import('../../src/handlers/sus-patterns.js');
+    const manager = new SusPatternsManager(createTestConfig(), defaultLogger);
+    const body = new TextEncoder().encode('"just a string with <script>alert(1)</script>"');
+    const [isThreat] = await scanRequestWithManager(
+      manager,
+      createMockRequest({
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: async () => body,
+      }),
+    );
+    expect(isThreat).toBe(true);
+  });
+
+  it('ignores whitespace-only bodies', async () => {
+    const { SusPatternsManager } = await import('../../src/handlers/sus-patterns.js');
+    const manager = new SusPatternsManager(createTestConfig(), defaultLogger);
+    const [isThreat] = await scanRequestWithManager(
+      manager,
+      createMockRequest({
+        method: 'POST',
+        headers: { 'content-type': 'text/plain' },
+        body: async () => new TextEncoder().encode('   \n\t '),
+      }),
+    );
+    expect(isThreat).toBe(false);
+  });
+
+  /* Scan-budget behavior (reference _scan_value_budget defaults: 512 values,
+     65536 chars): values beyond the budget are not scanned. */
+  it('stops scanning after the 512 value budget', async () => {
+    const { SusPatternsManager } = await import('../../src/handlers/sus-patterns.js');
+    const manager = new SusPatternsManager(createTestConfig(), defaultLogger);
+    const queryParams: Record<string, string> = {};
+    for (let i = 0; i < 300; i++) queryParams[`field${i}`] = String(i);
+    queryParams['zlast'] = '<img src=x onerror=alert(1)>';
+    const [isThreat] = await scanRequestWithManager(manager, createMockRequest({ queryParams }));
+    expect(isThreat).toBe(false);
+  });
+
+  it('stops scanning after the 65536 char budget', async () => {
+    const { SusPatternsManager } = await import('../../src/handlers/sus-patterns.js');
+    const manager = new SusPatternsManager(createTestConfig(), defaultLogger);
+    const [isThreat] = await scanRequestWithManager(
+      manager,
+      createMockRequest({
+        queryParams: { big: 'x'.repeat(70000), evil: '<img src=x onerror=alert(1)>' },
+      }),
+    );
+    expect(isThreat).toBe(false);
+  });
+
+  /* Stub-manager tests for the error and message-formatting branches. */
+  function stubManager(
+    detectImpl: (content: string, ip: string, context: string) => unknown,
+  ): import('../../src/handlers/sus-patterns.js').SusPatternsManager {
+    return {
+      detect: async (content: string, ip: string, context: string) => detectImpl(content, ip, context),
+    } as unknown as import('../../src/handlers/sus-patterns.js').SusPatternsManager;
+  }
+
+  it('formats semantic threats like the reference message builder', async () => {
+    const manager = stubManager((content) => content !== 'q' ? {
+      isThreat: true,
+      threatScore: 0.95,
+      threats: [{
+        pattern: 'semantic:xss',
+        context: 'query_param',
+        matchedContent: 'score=0.950',
+        detectionMethod: 'semantic',
+      }],
+      executionTime: 0,
+      timeouts: [],
+      correlationId: null,
+      originalLength: 1,
+      processedLength: 1,
+    } : { isThreat: false, threats: [] });
+    const [isThreat, info] = await scanRequestWithManager(
+      manager,
+      createMockRequest({ queryParams: { q: 'something semantic' } }),
+    );
+    expect(isThreat).toBe(true);
+    expect(info).toContain("Query param 'q': Semantic attack: xss (score: 0.95)");
+  });
+
+  it('reports a threat without entries as generic', async () => {
+    const manager = stubManager((content) => content !== 'q'
+      ? { isThreat: true, threats: [] }
+      : { isThreat: false, threats: [] });
+    const [isThreat, info] = await scanRequestWithManager(
+      manager,
+      createMockRequest({ queryParams: { q: 'x' } }),
+    );
+    expect(isThreat).toBe(true);
+    expect(info).toContain("Query param 'q': Threat detected");
+  });
+
+  it('treats engine failures as non-threats', async () => {
+    const manager = stubManager(() => { throw new Error('engine boom'); });
+    const [isThreat] = await scanRequestWithManager(
+      manager,
+      createMockRequest({ queryParams: { q: '<img src=x onerror=alert(1)>' } }),
+    );
     expect(isThreat).toBe(false);
   });
 });
