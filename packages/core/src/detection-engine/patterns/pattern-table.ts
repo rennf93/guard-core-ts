@@ -1,9 +1,12 @@
 /**
+/**
  * Canonical detection pattern table, generated from the guard-core spec
  * 4.0.2 reference (guard_core/handlers/_suspatterns_pattern_table.py).
  * The `source` strings are carried verbatim on threats and compared by the
  * conformance corpus; regenerate via the reference when the spec moves.
  */
+
+import { _TOP_LEVEL_PATH_PREFIX_RE } from './canonical-sources.generated.js';
 
 export interface TableEntry {
   readonly source: string;
@@ -170,6 +173,20 @@ export const PATTERN_DEFINITIONS: readonly TableEntry[] = [
   { source: "E:\\d+:\"", contexts: new Set(["header", "query_param", "request_body", "unknown", "url_path"]), category: "deserialization" },
   { source: "<ObjectDataProvider\\b", contexts: new Set(["header", "query_param", "request_body", "unknown", "url_path"]), category: "deserialization" },
 ];
+
+/**
+ * Whole-value recon rows whose leading path separator is optional: outside a
+ * URL path they match bare words such as "default" or "README.md", not only
+ * probe paths. Mirrors RECON_OPTIONAL_SEPARATOR_PATTERN_SOURCES in
+ * guard_core/handlers/_suspatterns_pattern_table.py (upstream #115/#116):
+ * the recon sources that start with the optional-separator anchor \A[/\\]?;
+ * required-separator (\A[/\\]) rows and non-anchored rows are excluded.
+ */
+export const RECON_OPTIONAL_SEPARATOR_PATTERN_SOURCES: ReadonlySet<string> = new Set(
+  PATTERN_DEFINITIONS
+    .filter((entry) => entry.category === 'recon' && entry.source.startsWith(_TOP_LEVEL_PATH_PREFIX_RE))
+    .map((entry) => entry.source),
+);
 
 /** Patterns whose matches are suppressed inside binary-dense regions. */
 export const NOISE_PRONE_PATTERN_SOURCES: ReadonlySet<string> = new Set([
