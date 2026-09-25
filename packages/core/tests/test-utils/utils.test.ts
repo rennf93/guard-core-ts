@@ -43,8 +43,35 @@ describe('sanitizeForLog', () => {
     expect(sanitizeForLog('col1\tcol2')).toBe('col1\\tcol2');
   });
 
-  it('escapes control characters', () => {
-    expect(sanitizeForLog('hello\x00world')).toBe('hello\\x00world');
+  it('escapes control characters as unicode escapes', () => {
+    expect(sanitizeForLog('hello\x00world')).toBe('hello\\u0000world');
+    expect(sanitizeForLog('esc\x1b[31m')).toBe('esc\\u001b[31m');
+    expect(sanitizeForLog('del\x7f')).toBe('del\\u007f');
+  });
+
+  it('escapes non-ASCII BMP characters', () => {
+    expect(sanitizeForLog('café')).toBe('caf\\u00e9');
+    expect(sanitizeForLog('中文')).toBe('\\u4e2d\\u6587');
+  });
+
+  it('escapes astral characters as a single code point escape', () => {
+    expect(sanitizeForLog('👍')).toBe('\\u1f44d');
+  });
+
+  it('escapes lone surrogates', () => {
+    expect(sanitizeForLog('\udc80\udcff\udca1')).toBe('\\x80\\xff\\xa1');
+    expect(sanitizeForLog('a\ud83db')).toBe('a\\ud83db');
+  });
+
+  it('escapes a mixed string', () => {
+    expect(
+      sanitizeForLog('mixed \x00 ctrl and é accent and \u{1f600} emoji end'),
+    ).toBe('mixed \\u0000 ctrl and \\u00e9 accent and \\u1f600 emoji end');
+  });
+
+  it('leaves pure ASCII unchanged', () => {
+    expect(sanitizeForLog('pure ASCII 123 !?')).toBe('pure ASCII 123 !?');
+    expect(sanitizeForLog('')).toBe('');
   });
 
   it('leaves normal text unchanged', () => {

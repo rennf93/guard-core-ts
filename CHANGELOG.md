@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Detection: recon whole-value rows with an optional leading path separator no longer flag bare words such as "default" or "README.md" scanned in query/body contexts; bare words remain probes as the url_path (or in unknown contexts) and separator-prefixed paths are still threats. Parity with guard-core #115/#116 (commit 08f79d67)
+- Logging: `sanitizeForLog` now emits pure ASCII like the reference `_sanitize_for_log` (guard-core commit f5d53ca5, log half). Control characters and every non-ASCII code point become `\uXXXX` escapes (lone surrogate-escaped bytes in the 0xDC80-0xDCFF range become `\xNN`), so log lines can never raise on legacy code pages such as Windows cp1252
 
 ## [4.0.4] - 2026-09-24
 

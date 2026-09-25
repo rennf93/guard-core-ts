@@ -12,14 +12,31 @@ const EXCLUDED_HEADERS = new Set([
   'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform',
 ]);
 
+/**
+ * Port of guard_core._utils.logging_utils._sanitize_for_log: make a string
+ * safe to emit on any console encoding. Control characters become \uXXXX
+ * escapes and every non-ASCII code point becomes a \uXXXX (or \xNN for
+ * surrogate-escaped bytes in the 0xDC80-0xDCFF range) escape, so the result
+ * is pure ASCII and can never raise on legacy code pages such as cp1252.
+ */
 export function sanitizeForLog(value: string): string {
-  return value
+  if (!value) return value;
+  const sanitized = value
     .replace(/\n/g, '\\n')
     .replace(/\r/g, '\\r')
-    .replace(/\t/g, '\\t')
-    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, (ch) =>
-      `\\x${ch.charCodeAt(0).toString(16).padStart(2, '0')}`,
-    );
+    .replace(/\t/g, '\\t');
+  let out = '';
+  for (const char of sanitized) {
+    const code = char.codePointAt(0) ?? 0;
+    if (code >= 32 && code <= 126) {
+      out += char;
+    } else if (code >= 0xdc80 && code <= 0xdcff) {
+      out += `\\x${(code - 0xdc00).toString(16).padStart(2, '0')}`;
+    } else {
+      out += `\\u${code.toString(16).padStart(4, '0')}`;
+    }
+  }
+  return out;
 }
 
 export async function sendAgentEvent(
