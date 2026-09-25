@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Detection: recon whole-value rows with an optional leading path separator no longer flag bare words such as "default" or "README.md" scanned in query/body contexts; bare words remain probes as the url_path (or in unknown contexts) and separator-prefixed paths are still threats. Parity with guard-core #115/#116 (commit 08f79d67)
+
 ## [4.0.4] - 2026-09-24
 
 ### Parity with guard-core 4.0.4

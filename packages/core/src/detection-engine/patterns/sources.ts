@@ -91,6 +91,25 @@ export function _source_extension_path_is_probe(context: string): boolean {
   return !context.endsWith(_EMBEDDED_JSON_LEAF_CONTEXT_SUFFIX);
 }
 
+// Contexts whose scanned value IS a URL path (or of unknown origin), so a
+// bare word still reads as a path probe. Mirrors _RECON_BARE_PATH_CONTEXTS
+// in guard_core/handlers/_suspatterns_sources.py (upstream #115/#116).
+const _RECON_BARE_PATH_CONTEXTS: ReadonlySet<string> = new Set(['url_path', 'unknown']);
+
+/**
+ * Python `_recon_path_value_is_probe`: a recon match is a probe when the
+ * scanned value's context is url_path/unknown (compared on the first segment
+ * before any `:suffix`, e.g. `query_param:embedded_json`), or when the
+ * matched value itself starts with a path separator.
+ */
+export function reconPathValueIsProbe(matchedValue: string, context: string): boolean {
+  return (
+    _RECON_BARE_PATH_CONTEXTS.has(context.split(':', 1)[0] ?? '') ||
+    matchedValue.startsWith('/') ||
+    matchedValue.startsWith('\\')
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Context sets (CATEGORY_CONTEXT_MAP)
 // ---------------------------------------------------------------------------

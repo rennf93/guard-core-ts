@@ -8,7 +8,7 @@
 import { compilePythonPattern } from '../regex-compat.js';
 import { bounded_finditer } from '../scan-window.js';
 import type { CandidateValidator, CompiledPythonPattern, PatternThreat, RegexMatchLike, ScanWindowMatcher, WindowedFinder } from './types.js';
-import { PATTERN_DEFINITIONS, DETECTION_PATTERN_WEIGHT_OVERRIDES, NOISE_PRONE_PATTERN_SOURCES } from './pattern-table.js';
+import { PATTERN_DEFINITIONS, DETECTION_PATTERN_WEIGHT_OVERRIDES, NOISE_PRONE_PATTERN_SOURCES, RECON_OPTIONAL_SEPARATOR_PATTERN_SOURCES } from './pattern-table.js';
 import { matchIsBinaryDensity } from '../binary.js';
 import {
   _CMD_INJECTION_DOLLAR_SUBSTITUTION_RE,
@@ -72,6 +72,7 @@ import {
   _SSTI_HASH_BRACE_SHAPE_RE,
   _XML_XXE_PUBLIC_EXTERNAL_DTD_RE,
   _source_extension_path_is_probe,
+  reconPathValueIsProbe,
 } from './sources.js';
 import { _pickle_global_candidate_is_injection } from './pickle.js';
 import { _xml_internal_entity_finditer, _xml_system_finditer, _xml_xxe_public_external_dtd_finditer } from './xml-xxe.js';
@@ -274,6 +275,18 @@ export function buildRegexThreat(
 ): PatternThreat | null {
   const validator = validatorFor(compiled.source);
   if (validator !== undefined && !validator(match, context)) return null;
+  // Recon whole-value rows with an optional leading separator only count as
+  // probes where the scanned value reads as a path (url_path/unknown context)
+  // or the match itself is separator-prefixed; elsewhere a bare word such as
+  // "default" or "README.md" is an ordinary field value (upstream #115/#116,
+  // guard_core/handlers/_suspatterns_regex.py gate order: after the
+  // candidate-rejection validators, before the binary-noise gate).
+  if (
+    RECON_OPTIONAL_SEPARATOR_PATTERN_SOURCES.has(compiled.source) &&
+    !reconPathValueIsProbe(match[0], context)
+  ) {
+    return null;
+  }
   if (NOISE_PRONE_PATTERN_SOURCES.has(compiled.source) && binaryPrefix !== null) {
     const matchEnd = match.index + match[0].length;
     if (matchIsBinaryDensity(binaryPrefix, match.index, matchEnd, match.input.length)) return null;
