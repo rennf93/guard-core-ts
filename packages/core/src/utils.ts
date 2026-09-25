@@ -1,10 +1,12 @@
 import ipaddr from 'ipaddr.js';
 
 import type { ResolvedSecurityConfig } from './models/config.js';
+import { defaultLogger } from './models/logger.js';
 import type { Logger } from './models/logger.js';
 import type { AgentHandlerProtocol } from './protocols/agent.js';
 import type { GeoIPHandler } from './protocols/geo-ip.js';
 import type { GuardRequest } from './protocols/request.js';
+import type { DetectionResult, SusPatternsManager } from './handlers/sus-patterns.js';
 
 const EXCLUDED_HEADERS = new Set([
   'host', 'user-agent', 'accept', 'accept-encoding', 'connection',
@@ -209,125 +211,298 @@ export async function isIpAllowed(
   return true;
 }
 
-export async function detectPenetrationAttempt(
+/**
+ * Scan budgets mirroring the reference defaults (_DEFAULT_MAX_SCAN_VALUES,
+ * _DEFAULT_MAX_SCAN_CHARS, _DEFAULT_MAX_JSON_DEPTH in
+ * guard_core/_utils/detection_scan.py + detection_config.py).
+ */
+const MAX_SCAN_VALUES = 512;
+const MAX_SCAN_CHARS = 65536;
+const MAX_JSON_DEPTH = 32;
+
+/** Mongo operator keys, ported from _MONGO_OPERATOR_KEY_RE in body_json_scan.py. */
+const MONGO_OPERATOR_KEY_RE =
+  /^\$(?:ne|gt|gte|lt|lte|eq|in|nin|nor|and|or|not|all|size|exists|type|mod|options|where|regex|expr|function|elemMatch)$/;
+
+interface ScanBudget {
+  values: number;
+  chars: number;
+}
+
+function scanBudgetExhausted(budget: ScanBudget, value: string): boolean {
+  budget.values++;
+  if (budget.values > MAX_SCAN_VALUES) return true;
+  if (budget.chars >= MAX_SCAN_CHARS) return true;
+  budget.chars += value.length;
+  return false;
+}
+
+/**
+ * Shared SusPatternsManager backing the standalone detectPenetrationAttempt
+ * entry point, mirroring the reference's configured sus_patterns_handler
+ * singleton: constructed once, reused across requests.
+ */
+let defaultManagerPromise: Promise<SusPatternsManager> | null = null;
+function getDefaultSusPatternsManager(): Promise<SusPatternsManager> {
+  defaultManagerPromise ??= (async () => {
+    const { SusPatternsManager } = await import('./handlers/sus-patterns.js');
+    const { SecurityConfigSchema } = await import('./models/config.js');
+    return new SusPatternsManager(SecurityConfigSchema.parse({}), defaultLogger);
+  })();
+  return defaultManagerPromise;
+}
+
+function buildThreatMessage(result: DetectionResult): string {
+  const threat = result.threats[0];
+  if (threat === undefined) return 'Threat detected';
+  if (threat.detectionMethod === 'semantic') {
+    const attackType = threat.pattern.slice('semantic:'.length) || 'suspicious';
+    const scoreMatch = /score=([\d.]+)/.exec(threat.matchedContent);
+    const score = scoreMatch ? Number(scoreMatch[1]).toFixed(2) : '0.00';
+    return `Semantic attack: ${attackType} (score: ${score})`;
+  }
+  return `Value matched pattern '${threat.pattern}'`;
+}
+
+/**
+ * Full request-surface penetration scan on top of the SusPatternsManager
+ * engine (the canonical pattern table, all content views). Value routing
+ * mirrors the reference detect flow in guard_core/_utils/
+ * penetration_detection.py + detection_scan.py: query param names and values,
+ * the URL path, header names and values, then the body (JSON leaves, form
+ * fields, or the raw blob, per content type). JSON leaves embedded inside
+ * non-body values are labeled with the `:embedded_json` context suffix so the
+ * engine's per-context gates (recon bare-word rule, source-extension probe
+ * rule) apply to them.
+ */
+export async function scanRequestWithManager(
+  manager: SusPatternsManager,
   request: GuardRequest,
 ): Promise<[boolean, string]> {
-  const { SusPatternsManager } = await import('./handlers/sus-patterns.js');
-
   const clientIp = request.clientHost ?? 'unknown';
-  const correlationId = `${clientIp}:${Date.now()}`;
+  const budget: ScanBudget = { values: 0, chars: 0 };
 
-  const queryString = Object.entries(request.queryParams)
-    .map(([k, v]) => `${k}=${v}`)
-    .join('&');
-
-  if (queryString) {
-    const result = await checkRequestComponent(queryString, 'query_param', 'query_params', clientIp, correlationId);
-    if (result[0]) return result;
+  for (const [key, value] of Object.entries(request.queryParams)) {
+    const nameHit = await detectComponent(manager, key, `query_param:${key}`, clientIp, budget);
+    if (nameHit[0]) return [true, `Query param name '${key}': ${nameHit[1]}`];
+    const valueHit = await detectValueEnhanced(manager, value, `query_param:${key}`, clientIp, budget);
+    if (valueHit[0]) return [true, `Query param '${key}': ${valueHit[1]}`];
   }
 
   const urlPath = request.urlPath;
   if (urlPath && urlPath !== '/') {
-    const result = await checkRequestComponent(urlPath, 'url_path', 'url_path', clientIp, correlationId);
-    if (result[0]) return result;
+    const hit = await detectValueEnhanced(manager, urlPath, 'url_path', clientIp, budget);
+    if (hit[0]) return [true, `URL path: ${hit[1]}`];
   }
 
   for (const [headerName, headerValue] of Object.entries(request.headers)) {
     if (EXCLUDED_HEADERS.has(headerName.toLowerCase())) continue;
     if (headerName.toLowerCase().startsWith('sec-')) continue;
-    const result = await checkRequestComponent(headerValue, 'header', `header:${headerName}`, clientIp, correlationId);
-    if (result[0]) return result;
+    const nameHit = await detectComponent(manager, headerName, `header:${headerName}`, clientIp, budget);
+    if (nameHit[0]) return [true, `Header name '${headerName}': ${nameHit[1]}`];
+    const valueHit = await detectValueEnhanced(manager, headerValue, `header:${headerName}`, clientIp, budget);
+    if (valueHit[0]) return [true, `Header '${headerName}': ${valueHit[1]}`];
   }
 
+  return scanBodySurface(manager, request, clientIp, budget);
+}
+
+async function scanBodySurface(
+  manager: SusPatternsManager,
+  request: GuardRequest,
+  clientIp: string,
+  budget: ScanBudget,
+): Promise<[boolean, string]> {
+  let rawBody: string;
   try {
     const bodyBytes = await request.body();
-    if (bodyBytes.length > 0) {
-      const bodyText = new TextDecoder().decode(bodyBytes);
-      if (bodyText.trim()) {
-        const result = await checkRequestComponent(bodyText, 'request_body', 'body', clientIp, correlationId);
-        if (result[0]) return result;
-      }
-    }
+    if (bodyBytes.length === 0) return [false, ''];
+    rawBody = new TextDecoder().decode(bodyBytes);
+    if (!rawBody.trim()) return [false, ''];
   } catch {
     // body read failure is not a threat
+    return [false, ''];
   }
 
+  const contentType = (request.headers['content-type'] ?? '').toLowerCase();
+
+  if (contentType.includes('application/x-www-form-urlencoded')) {
+    for (const [name, value] of new URLSearchParams(rawBody)) {
+      const nameHit = await detectComponent(manager, name, 'request_body', clientIp, budget);
+      if (nameHit[0]) return [true, `Form field name '${name}': ${nameHit[1]}`];
+      const valueHit = await detectValueEnhanced(
+        manager, value, 'request_body:form_field', clientIp, budget,
+      );
+      if (valueHit[0]) return [true, `Request body field '${name}': ${valueHit[1]}`];
+    }
+    return [false, ''];
+  }
+
+  if (contentType.includes('json')) {
+    const jsonHit = await scanJsonContent(manager, rawBody, 'request_body', clientIp, budget);
+    if (jsonHit[0]) return jsonHit;
+  }
+
+  const blobHit = await detectValueEnhanced(manager, rawBody, 'request_body', clientIp, budget);
+  if (blobHit[0]) return [true, `Request body: ${blobHit[1]}`];
   return [false, ''];
 }
 
-async function checkRequestComponent(
+/**
+ * Embedded-JSON pre-scan (reference _check_embedded_json): when the scanned
+ * value parses to an object or array, its leaves are scanned under
+ * `{context}:embedded_json` before the raw value itself runs through the
+ * engine. The reference skips it for the body context, where JSON content is
+ * walked once by scanJsonContent instead.
+ */
+async function detectValueEnhanced(
+  manager: SusPatternsManager,
   value: string,
   context: string,
-  componentName: string,
   clientIp: string,
-  correlationId: string,
+  budget: ScanBudget,
 ): Promise<[boolean, string]> {
-  try {
-    const result = await checkValueEnhanced(value, context, clientIp, correlationId);
-    if (result[0]) {
-      return [true, `Suspicious ${componentName}: ${result[1]}`];
-    }
-  } catch {
-    /* v8 ignore next -- detection failure catch unreachable because dangerousPatterns check returns before checkValueEnhanced can throw */
+  if (scanBudgetExhausted(budget, value)) return [false, ''];
+
+  if (context !== 'request_body') {
+    const jsonHit = await scanJsonContent(manager, value, `${context}:embedded_json`, clientIp, budget);
+    if (jsonHit[0]) return jsonHit;
   }
-  return [false, ''];
+
+  let result: DetectionResult;
+  try {
+    result = await manager.detect(value, clientIp, context);
+  } catch {
+    return [false, ''];
+  }
+  if (!result.isThreat) return [false, ''];
+  return [true, buildThreatMessage(result)];
 }
 
-async function checkValueEnhanced(
+/**
+ * Component-name scan (reference _scan_component_name): keys and names are
+ * scanned as plain values, never through the embedded-JSON path.
+ */
+async function detectComponent(
+  manager: SusPatternsManager,
   value: string,
   context: string,
   clientIp: string,
-  correlationId: string,
+  budget: ScanBudget,
 ): Promise<[boolean, string]> {
-  const { SusPatternsManager } = await import('./handlers/sus-patterns.js');
-
+  if (scanBudgetExhausted(budget, value)) return [false, ''];
   try {
-    const jsonData = JSON.parse(value);
-    if (typeof jsonData === 'object' && jsonData !== null) {
-      const result = await checkJsonFields(jsonData as Record<string, unknown>, context, clientIp, correlationId);
-      if (result[0]) return result;
-    }
+    const result = await manager.detect(value, clientIp, context);
+    if (!result.isThreat) return [false, ''];
+    return [true, buildThreatMessage(result)];
   } catch {
-    // not JSON, check as plain text
+    return [false, ''];
   }
-
-  // Lazy: we don't have a global instance here, so we do a lightweight regex check
-  // The full SusPatternsManager.detect() is used by the SuspiciousActivityCheck
-  const dangerousPatterns = [
-    /<script/i,
-    /javascript:/i,
-    /UNION\s+SELECT/i,
-    /\.\.\//,
-    /eval\s*\(/i,
-    /exec\s*\(/i,
-    /system\s*\(/i,
-  ];
-
-  for (const pattern of dangerousPatterns) {
-    if (pattern.test(value)) {
-      return [true, `Pattern match: ${pattern.source}`];
-    }
-  }
-
-  return [false, ''];
 }
 
-async function checkJsonFields(
-  data: Record<string, unknown>,
+/**
+ * JSON body scan (reference _scan_json_content/_scan_json_value): walks
+ * parsed JSON, scans operator-shaped dict keys (`$where`, `$ne`, ...) and
+ * every scalar leaf under the given context, capping recursion at
+ * MAX_JSON_DEPTH (deeper subtrees serialize to text and scan as one value).
+ */
+async function scanJsonContent(
+  manager: SusPatternsManager,
+  raw: string,
   context: string,
   clientIp: string,
-  correlationId: string,
+  budget: ScanBudget,
 ): Promise<[boolean, string]> {
-  for (const [key, val] of Object.entries(data)) {
-    if (typeof val === 'string') {
-      const result = await checkValueEnhanced(val, context, clientIp, correlationId);
-      if (result[0]) return [true, `JSON field '${key}': ${result[1]}`];
-    } else if (typeof val === 'object' && val !== null && !Array.isArray(val)) {
-      const result = await checkJsonFields(val as Record<string, unknown>, context, clientIp, correlationId);
-      if (result[0]) return result;
-    }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return [false, ''];
   }
-  return [false, ''];
+  if (typeof parsed !== 'object' || parsed === null) return [false, ''];
+  return scanJsonValue(manager, parsed, '', context, clientIp, budget, 1);
+}
+
+async function scanJsonValue(
+  manager: SusPatternsManager,
+  value: unknown,
+  label: string,
+  context: string,
+  clientIp: string,
+  budget: ScanBudget,
+  depth: number,
+): Promise<[boolean, string]> {
+  if (Array.isArray(value)) {
+    if (depth >= MAX_JSON_DEPTH) return scanCappedJsonSubtree(manager, value, label, context, clientIp, budget);
+    for (const item of value) {
+      const hit = await scanJsonValue(manager, item, label, context, clientIp, budget, depth + 1);
+      if (hit[0]) return hit;
+    }
+    return [false, ''];
+  }
+  if (typeof value === 'object' && value !== null) {
+    if (depth >= MAX_JSON_DEPTH) return scanCappedJsonSubtree(manager, value, label, context, clientIp, budget);
+    for (const [key, item] of Object.entries(value)) {
+      const keyHit = await scanJsonKey(manager, key, context, clientIp, budget);
+      if (keyHit[0]) return [true, `JSON key '${key}': ${keyHit[1]}`];
+      const hit = await scanJsonValue(manager, item, key, context, clientIp, budget, depth + 1);
+      if (hit[0]) return hit;
+    }
+    return [false, ''];
+  }
+
+  const hit = await detectValueEnhanced(
+    manager, String(value), context, clientIp, budget,
+  );
+  if (!hit[0]) return [false, ''];
+  return [true, label ? `Request body field '${label}': ${hit[1]}` : hit[1]];
+}
+
+async function scanJsonKey(
+  manager: SusPatternsManager,
+  key: string,
+  context: string,
+  clientIp: string,
+  budget: ScanBudget,
+): Promise<[boolean, string]> {
+  if (MONGO_OPERATOR_KEY_RE.test(key)) {
+    return [true, `JSON operator key '${key}': matched pattern '${MONGO_OPERATOR_KEY_RE.source}'`];
+  }
+  return detectComponent(manager, key, `${context}:${key}`, clientIp, budget);
+}
+
+async function scanCappedJsonSubtree(
+  manager: SusPatternsManager,
+  value: object,
+  label: string,
+  context: string,
+  clientIp: string,
+  budget: ScanBudget,
+): Promise<[boolean, string]> {
+  let serialized: string;
+  try {
+    serialized = JSON.stringify(value);
+  } catch {
+    /* v8 ignore start -- JSON.stringify cannot throw on JSON.parse output */
+    return [false, ''];
+  }
+  /* v8 ignore stop */
+  const hit = await detectValueEnhanced(manager, serialized, context, clientIp, budget);
+  if (!hit[0]) return [false, ''];
+  return [true, label ? `Request body field '${label}': ${hit[1]}` : hit[1]];
+}
+
+/**
+ * Standalone penetration detection entry point (public API). Runs the full
+ * SusPatternsManager engine over the request surface on a shared default
+ * manager; the live middleware path feeds the initializer's manager into
+ * scanRequestWithManager directly via SuspiciousActivityCheck.
+ */
+export async function detectPenetrationAttempt(
+  request: GuardRequest,
+): Promise<[boolean, string]> {
+  const manager = await getDefaultSusPatternsManager();
+  return scanRequestWithManager(manager, request);
 }
 
 export function logActivity(

@@ -124,7 +124,7 @@ export async function initializeSecurityMiddleware(
     new CloudProviderCheck(middlewareProtocol),
     new UserAgentCheck(middlewareProtocol),
     new RateLimitCheck(middlewareProtocol),
-    new SuspiciousActivityCheck(middlewareProtocol),
+    new SuspiciousActivityCheck(middlewareProtocol, registry.susPatternsHandler),
     new CustomRequestCheck(middlewareProtocol),
   ], logger);
 

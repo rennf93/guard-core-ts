@@ -2,6 +2,7 @@ import ipaddr from 'ipaddr.js';
 
 import type { ResolvedSecurityConfig } from '../../models/config.js';
 import type { RouteConfig } from '../../models/route-config.js';
+import type { SusPatternsManager } from '../../handlers/sus-patterns.js';
 import type { GeoIPHandler } from '../../protocols/geo-ip.js';
 import type { GuardMiddlewareProtocol } from '../../protocols/middleware.js';
 import type { GuardRequest } from '../../protocols/request.js';
@@ -138,6 +139,7 @@ export async function detectPenetrationPatterns(
   routeConfig: RouteConfig | null,
   config: ResolvedSecurityConfig,
   shouldBypassCheckFn: (check: string, rc: RouteConfig | null) => boolean,
+  susPatternsManager?: SusPatternsManager | null,
 ): Promise<[boolean, string]> {
   let penetrationEnabled = config.enablePenetrationDetection;
   let routeSpecificDetection: boolean | null = null;
@@ -148,6 +150,10 @@ export async function detectPenetrationPatterns(
   }
 
   if (penetrationEnabled && !shouldBypassCheckFn('penetration', routeConfig)) {
+    const { scanRequestWithManager } = await import('../../utils.js');
+    if (susPatternsManager) {
+      return scanRequestWithManager(susPatternsManager, request);
+    }
     const { detectPenetrationAttempt } = await import('../../utils.js');
     return detectPenetrationAttempt(request);
   }

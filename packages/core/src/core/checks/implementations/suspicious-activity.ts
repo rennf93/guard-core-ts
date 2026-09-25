@@ -1,5 +1,7 @@
+import type { GuardMiddlewareProtocol } from '../../../protocols/middleware.js';
 import type { GuardRequest } from '../../../protocols/request.js';
 import type { GuardResponse } from '../../../protocols/response.js';
+import type { SusPatternsManager } from '../../../handlers/sus-patterns.js';
 import type { RouteConfig } from '../../../models/route-config.js';
 import type { RouteConfigResolver } from '../../routing/resolver.js';
 import { detectPenetrationPatterns } from '../helpers.js';
@@ -7,6 +9,20 @@ import { logActivity } from '../../../utils.js';
 import { SecurityCheck } from '../base.js';
 
 export class SuspiciousActivityCheck extends SecurityCheck {
+  private readonly susPatterns: SusPatternsManager | null;
+
+  constructor(
+    middleware: GuardMiddlewareProtocol,
+    susPatternsManager?: SusPatternsManager | null,
+  ) {
+    super(middleware);
+    /* The manager from the handler initializer is shared across requests;
+       when absent (direct construction in tests or standalone pipelines) the
+       check leaves the manager null and detectPenetrationPatterns falls back
+       to the shared default manager instead of building one per request. */
+    this.susPatterns = susPatternsManager ?? null;
+  }
+
   get checkName(): string { return 'suspicious_activity'; }
 
   async check(request: GuardRequest): Promise<GuardResponse | null> {
@@ -23,6 +39,7 @@ export class SuspiciousActivityCheck extends SecurityCheck {
       routeConfig ?? null,
       this.config,
       (check, rc) => resolver.shouldBypassCheck(check, rc),
+      this.susPatterns,
     );
 
     if (!isThreat) return null;
