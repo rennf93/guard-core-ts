@@ -29,15 +29,15 @@
     "tsup": "^8",
     "vitest": "^4",
     "typescript": "~5.9",
-    "@nestjs/common": "^11",
-    "@nestjs/core": "^11",
+    "@nestjs/common": "^12",
+    "@nestjs/core": "^12",
     "@types/express": "^5",
     "reflect-metadata": "^0.2",
     "rxjs": "^7"
   },
   "peerDependencies": {
-    "@nestjs/common": "^11",
-    "@nestjs/core": "^11",
+    "@nestjs/common": "^12",
+    "@nestjs/core": "^12",
     "reflect-metadata": "^0.1 || ^0.2"
   },
   "license": "MIT",
