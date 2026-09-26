@@ -1,3 +1,4 @@
+import { isIP } from 'node:net';
 import ipaddr from 'ipaddr.js';
 
 import { multipartPartEntries, parseFormPairs, parseMediaTypeParams, parseMultipartParts } from './detection-engine/body-form-scan.js';
@@ -9,11 +10,85 @@ import type { GeoIPHandler } from './protocols/geo-ip.js';
 import type { GuardRequest } from './protocols/request.js';
 import type { DetectionResult, SusPatternsManager } from './handlers/sus-patterns.js';
 
+/**
+ * The reference's hardcoded `_DEFAULT_EXCLUDED_HEADERS` (guard_core/_utils/
+ * detection_config.py): proxy identity, forwarding and browser-fingerprint
+ * headers that enter the detection scan through the excluded-header routing
+ * (ssrf category skip only, never a blind full skip) instead of the plain
+ * category sweep. Always merged with the configured
+ * `excludedDetectionHeaders`.
+ */
 const EXCLUDED_HEADERS = new Set([
   'host', 'user-agent', 'accept', 'accept-encoding', 'connection',
   'origin', 'referer', 'sec-fetch-site', 'sec-fetch-mode', 'sec-fetch-dest',
   'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform',
+  'forwarded', 'x-forwarded-for', 'x-forwarded-host', 'x-forwarded-proto',
+  'x-real-ip', 'x-client-ip', 'x-cluster-client-ip', 'cf-connecting-ip',
+  'true-client-ip', 'fly-client-ip', 'x-envoy-external-address',
 ]);
+
+/**
+ * Excluded headers whose typical values are client addresses (the reference's
+ * `_HEADER_CATEGORY_EXCLUSIONS`): the ssrf category skips for any value, not
+ * just address chains.
+ */
+const ADDRESS_HEADERS = new Set([
+  'host', 'origin', 'x-forwarded-for', 'x-forwarded-host', 'x-real-ip',
+  'x-client-ip', 'x-cluster-client-ip', 'cf-connecting-ip',
+  'true-client-ip', 'fly-client-ip', 'x-envoy-external-address', 'via',
+]);
+
+const SSRF_SKIP_CATEGORIES: ReadonlySet<string> = new Set(['ssrf']);
+
+/**
+ * `_strip_forwarded_entry_port`: remove the port from a Forwarded or
+ * X-Forwarded-For list entry so the address itself can be parsed
+ * ("1.2.3.4:8080" -> "1.2.3.4", "[::1]:8080" -> "::1").
+ */
+function stripForwardedEntryPort(value: string): string {
+  if (value.startsWith('[')) {
+    const closing = value.indexOf(']');
+    if (closing === -1) return value;
+    const remainder = value.slice(closing + 1);
+    if (remainder !== '' && !/^:\d+$/.test(remainder)) return value;
+    return value.slice(1, closing);
+  }
+  if ((value.match(/:/g) ?? []).length === 1) {
+    const idx = value.indexOf(':');
+    if (/^\d+$/.test(value.slice(idx + 1))) return value.slice(0, idx);
+  }
+  return value;
+}
+
+/**
+ * `_value_looks_like_address_chain`: every comma-separated token parses as an
+ * IP address once its port entry is stripped, so a value like
+ * "10.0.0.5, 172.16.0.1" reads as a proxy chain and not as an attack payload.
+ */
+function valueLooksLikeAddressChain(value: string): boolean {
+  const tokens = value
+    .split(',')
+    .map((token) => token.trim())
+    .filter((token) => token !== '');
+  if (tokens.length === 0) return false;
+  return tokens.every((token) => isIP(stripForwardedEntryPort(token)));
+}
+
+/**
+ * `_excluded_header_skip_categories`: the categories the scan must suppress
+ * for one excluded header value. Address-carrying proxy headers skip ssrf for
+ * any value; any other excluded header skips ssrf only when its whole value
+ * parses as an address chain (so an XSS or SQLi payload in the same header
+ * still detects). undefined means the header scans with every category.
+ */
+function excludedHeaderSkipCategories(
+  nameLower: string,
+  value: string,
+): ReadonlySet<string> | undefined {
+  if (ADDRESS_HEADERS.has(nameLower)) return SSRF_SKIP_CATEGORIES;
+  if (valueLooksLikeAddressChain(value)) return SSRF_SKIP_CATEGORIES;
+  return undefined;
+}
 
 /**
  * Port of guard_core._utils.logging_utils._sanitize_for_log: make a string
@@ -245,14 +320,18 @@ interface ScanBudget {
 interface ScanExclusions {
   params: ReadonlySet<string>;
   bodyFields: ReadonlySet<string>;
+  headers: ReadonlySet<string>;
 }
 
 function resolveScanExclusions(
-  config?: Pick<ResolvedSecurityConfig, 'excludedDetectionParams' | 'excludedDetectionBodyFields'>,
+  config?: Pick<ResolvedSecurityConfig, 'excludedDetectionParams' | 'excludedDetectionBodyFields' | 'excludedDetectionHeaders'>,
 ): ScanExclusions {
+  const headers = new Set(EXCLUDED_HEADERS);
+  for (const name of config?.excludedDetectionHeaders ?? []) headers.add(name.toLowerCase());
   return {
     params: new Set(config?.excludedDetectionParams ?? []),
     bodyFields: new Set(config?.excludedDetectionBodyFields ?? []),
+    headers,
   };
 }
 
@@ -318,13 +397,18 @@ function buildThreatMessage(result: DetectionResult): string {
  *
  * `config`, when given, activates the reference's excluded-field surface:
  * `excludedDetectionParams` skips a query parameter's whole pair
- * (`key.lower() in excluded_params` in _scan_query_params) and
+ * (`key.lower() in excluded_params` in _scan_query_params),
  * `excludedDetectionBodyFields` skips urlencoded pairs and multipart parts
  * by field name and whole JSON subtrees by key at any nesting depth (the
  * body walk and the embedded-JSON walks of query and header values all
  * honor it, like the reference threading excluded_body_fields through
  * _scan_form_body, _scan_multipart_part, _scan_query_param_value and
- * _scan_normal_header_component).
+ * _scan_normal_header_component), and `excludedDetectionHeaders` merges
+ * into the excluded-header routing: an excluded header keeps scanning with
+ * every enabled category except the ssrf skip resolved per value
+ * (_scan_excluded_header_component + _excluded_header_skip_categories),
+ * so an address-carrying proxy header no longer false-positives ssrf
+ * while an attack payload in the same header still detects.
  *
  * The third tuple element carries the matched hit's detection categories
  * (reference DetectionResult.threat_categories), the input to the autoban
@@ -333,7 +417,7 @@ function buildThreatMessage(result: DetectionResult): string {
 export async function scanRequestWithManager(
   manager: SusPatternsManager,
   request: GuardRequest,
-  config?: Pick<ResolvedSecurityConfig, 'excludedDetectionParams' | 'excludedDetectionBodyFields'>,
+  config?: Pick<ResolvedSecurityConfig, 'excludedDetectionParams' | 'excludedDetectionBodyFields' | 'excludedDetectionHeaders'>,
 ): Promise<[boolean, string, string[]]> {
   const clientIp = request.clientHost ?? 'unknown';
   const budget: ScanBudget = { values: 0, chars: 0, categories: [] };
@@ -365,11 +449,19 @@ async function runRequestSurfaceScan(
   }
 
   for (const [headerName, headerValue] of Object.entries(request.headers)) {
-    if (EXCLUDED_HEADERS.has(headerName.toLowerCase())) continue;
-    if (headerName.toLowerCase().startsWith('sec-')) continue;
-    const nameHit = await detectComponent(manager, headerName, `header:${headerName}`, clientIp, budget);
+    const nameLower = headerName.toLowerCase();
+    // Excluded headers (the hardcoded proxy identity set merged with the
+    // configured excludedDetectionHeaders) are not skipped outright: like
+    // the reference's _scan_excluded_header_component they scan with every
+    // enabled category except the ssrf skip resolved from the header name
+    // and value, so an attack payload in the same header still detects.
+    const skipCategories = exclusions.headers.has(nameLower)
+      ? excludedHeaderSkipCategories(nameLower, headerValue)
+      : undefined;
+    if (skipCategories === undefined && nameLower.startsWith('sec-')) continue;
+    const nameHit = await detectComponent(manager, headerName, `header:${headerName}`, clientIp, budget, skipCategories);
     if (nameHit[0]) return [true, `Header name '${headerName}': ${nameHit[1]}`];
-    const valueHit = await detectValueEnhanced(manager, headerValue, `header:${headerName}`, clientIp, budget, exclusions.bodyFields);
+    const valueHit = await detectValueEnhanced(manager, headerValue, `header:${headerName}`, clientIp, budget, exclusions.bodyFields, skipCategories);
     if (valueHit[0]) return [true, `Header '${headerName}': ${valueHit[1]}`];
   }
 
@@ -487,6 +579,7 @@ async function detectValueEnhanced(
   clientIp: string,
   budget: ScanBudget,
   excludedBodyFields?: ReadonlySet<string>,
+  skipCategories?: ReadonlySet<string>,
 ): Promise<[boolean, string]> {
   if (scanBudgetExhausted(budget, value)) return [false, ''];
 
@@ -497,7 +590,7 @@ async function detectValueEnhanced(
 
   let result: DetectionResult;
   try {
-    result = await manager.detect(value, clientIp, context);
+    result = await manager.detect(value, clientIp, context, null, skipCategories ? { skipCategories } : undefined);
   } catch {
     return [false, ''];
   }
@@ -526,10 +619,11 @@ async function detectComponent(
   context: string,
   clientIp: string,
   budget: ScanBudget,
+  skipCategories?: ReadonlySet<string>,
 ): Promise<[boolean, string]> {
   if (scanBudgetExhausted(budget, value)) return [false, ''];
   try {
-    const result = await manager.detect(value, clientIp, context);
+    const result = await manager.detect(value, clientIp, context, null, skipCategories ? { skipCategories } : undefined);
     if (!result.isThreat) return [false, ''];
     recordHitCategories(budget, result);
     return [true, buildThreatMessage(result)];

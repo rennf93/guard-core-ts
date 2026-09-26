@@ -151,6 +151,7 @@ export const SecurityConfigSchema = z.object({
   detectionBinaryMinRunLength: z.number().int().min(4).max(1024).default(16),
   excludedDetectionParams: z.array(z.string()).default([]),
   excludedDetectionBodyFields: z.array(z.string()).default([]),
+  excludedDetectionHeaders: z.array(z.string()).default([]),
 
   enableAgent: z.boolean().default(false),
   agentApiKey: z.string().nullable().default(null),

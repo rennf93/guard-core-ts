@@ -420,6 +420,7 @@ export class SusPatternsManager {
     ipAddress: string,
     context = 'unknown',
     correlationId: string | null = null,
+    options?: { skipCategories?: ReadonlySet<string> },
   ): Promise<DetectionResult> {
     const startTime = performance.now();
     const originalLength = countCodePoints(content);
@@ -478,20 +479,35 @@ export class SusPatternsManager {
 
     const { threats: semanticThreats } = this.checkSemanticThreats(processedContent, content);
 
+    // Excluded-header category skip (the reference's
+    // _scan_excluded_header_component effective categories): threats whose
+    // category is skipped for this value never count toward the threat
+    // decision, exactly like patterns of a disabled category not matching.
+    let effectiveRegexThreats = regexThreats;
+    let effectiveSemanticThreats = semanticThreats;
+    const skipCategories = options?.skipCategories;
+    if (skipCategories !== undefined && skipCategories.size > 0) {
+      effectiveRegexThreats = regexThreats.filter((threat) => !skipCategories.has(threat.category));
+      effectiveSemanticThreats = semanticThreats.filter(
+        (threat) => !skipCategories.has(SEMANTIC_ATTACK_TYPE_TO_CATEGORY[threat.attack_type] ?? 'custom'),
+      );
+    }
+
     const threatScoreThreshold = this.threatScoreThreshold;
     const isThreat =
-      SusPatternsManager.regexAnomaly(regexThreats) >= threatScoreThreshold || semanticThreats.length > 0;
+      SusPatternsManager.regexAnomaly(effectiveRegexThreats) >= threatScoreThreshold ||
+      effectiveSemanticThreats.length > 0;
 
-    const threatScore = SusPatternsManager.calculateThreatScore(regexThreats, semanticThreats);
+    const threatScore = SusPatternsManager.calculateThreatScore(effectiveRegexThreats, effectiveSemanticThreats);
 
     const threats: DetectionResult['threats'] = [
-      ...regexThreats.map((threat) => ({
+      ...effectiveRegexThreats.map((threat) => ({
         pattern: threat.pattern,
         context: normalizedCtx,
         matchedContent: threat.match,
         detectionMethod: 'regex',
       })),
-      ...semanticThreats.map((threat) => ({
+      ...effectiveSemanticThreats.map((threat) => ({
         pattern: `semantic:${threat.attack_type}`,
         context: normalizedCtx,
         matchedContent: `score=${threatScore.toFixed(3)}`,
