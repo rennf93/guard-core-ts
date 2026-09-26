@@ -71,6 +71,11 @@ export interface DetectionResult {
     matchedContent: string;
     detectionMethod: string;
   }>;
+  /* Detection categories of the matched threats (regex row categories and
+     semantic attack types), deduplicated preserving first-seen order. The
+     reference twin is DetectionResult.threat_categories, the input to the
+     autoban counter (guard_core/_utils/detection_result_builders.py). */
+  threatCategories: string[];
   executionTime: number;
   timeouts: string[];
   correlationId: string | null;
@@ -496,10 +501,22 @@ export class SusPatternsManager {
 
     const executionTime = (performance.now() - startTime) / 1000;
 
+    /* Reference _build_detection_hit (detection_result_builders.py): each
+       regex threat contributes its row category and each semantic threat its
+       attack type, deduplicated in first-seen order. */
+    const threatCategories: string[] = [];
+    for (const threat of [...regexThreats, ...semanticThreats]) {
+      const category = threat.type === 'semantic'
+        ? (threat as InternalSemanticThreat).attack_type
+        : (threat as InternalRegexThreat).category;
+      if (!threatCategories.includes(category)) threatCategories.push(category);
+    }
+
     return {
       isThreat,
       threatScore,
       threats,
+      threatCategories,
       executionTime,
       timeouts: [],
       correlationId,

@@ -113,7 +113,7 @@ describe('IPBanManager agent event dispatch', () => {
     const failingAgent = createMockAgent();
     (failingAgent.sendEvent as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('network error'));
     await manager.initializeAgent(failingAgent);
-    await expect(manager.banIp('10.0.0.1', 60, 'test')).resolves.toBeUndefined();
+    await expect(manager.banIp('10.0.0.1', 60, 'test')).resolves.toBe(true);
   });
 
   it('does not throw when agent.sendEvent throws during unban', async () => {

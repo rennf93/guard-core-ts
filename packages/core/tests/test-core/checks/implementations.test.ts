@@ -760,12 +760,12 @@ describe('SuspiciousActivityCheck', () => {
     await check.check(createMockRequest({
       queryParams: { q: '<script>alert(1)</script>' },
     }));
-    expect(middleware.suspiciousRequestCounts.get('1.2.3.4')).toBe(1);
+    expect(middleware.suspiciousRequestCounts.get('1.2.3.4')?.get('xss')).toBe(1);
 
     await check.check(createMockRequest({
       queryParams: { q: '<script>alert(2)</script>' },
     }));
-    expect(middleware.suspiciousRequestCounts.get('1.2.3.4')).toBe(2);
+    expect(middleware.suspiciousRequestCounts.get('1.2.3.4')?.get('xss')).toBe(2);
   });
 });
 

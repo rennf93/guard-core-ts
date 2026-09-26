@@ -24,7 +24,10 @@ export class IPBanManager {
     this.agentHandler = agentHandler;
   }
 
-  async banIp(ip: string, duration: number, reason: string): Promise<void> {
+  /* Returns true when the ban was stored, mirroring the reference ban_ip
+     (guard_core/handlers/_ipban_bans.py) whose boolean lets the autoban
+     engine distinguish an applied ban from a refused one. */
+  async banIp(ip: string, duration: number, reason: string): Promise<boolean> {
     const now = Date.now() / 1000;
     const expiresAt = now + duration;
 
@@ -52,6 +55,7 @@ export class IPBanManager {
     }
 
     this.logger.info(`IP banned: ${ip} for ${duration}s - ${reason}`);
+    return true;
   }
 
   async isIpBanned(ip: string): Promise<boolean> {

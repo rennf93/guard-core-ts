@@ -129,11 +129,11 @@ describe('recon raw-view scan (bare words stay innocent)', () => {
   it('keeps a bare word innocent through the request surfaces', async () => {
     for (const word of BARE_WORDS) {
       const queryRequest = createMockRequest({ queryParams: { system: word } });
-      expect(await scanRequestWithManager(manager, queryRequest), `query bare "${word}"`).toEqual([false, '']);
+      expect(await scanRequestWithManager(manager, queryRequest), `query bare "${word}"`).toEqual([false, '', []]);
       const formRequest = bodyRequest('application/x-www-form-urlencoded', `system=${word}`);
-      expect(await scanRequestWithManager(manager, formRequest), `form bare "${word}"`).toEqual([false, '']);
+      expect(await scanRequestWithManager(manager, formRequest), `form bare "${word}"`).toEqual([false, '', []]);
       const jsonRequest = bodyRequest('application/json', JSON.stringify({ system: word }));
-      expect(await scanRequestWithManager(manager, jsonRequest), `json bare "${word}"`).toEqual([false, '']);
+      expect(await scanRequestWithManager(manager, jsonRequest), `json bare "${word}"`).toEqual([false, '', []]);
     }
   });
 });
@@ -157,7 +157,7 @@ describe('recon raw-view scan (embedded JSON leaves)', () => {
     expect(probeInfo).toContain("Request body field 'system':");
 
     const bareRequest = createMockRequest({ queryParams: { v: JSON.stringify({ system: 'default' }) } });
-    expect(await scanRequestWithManager(manager, bareRequest)).toEqual([false, '']);
+    expect(await scanRequestWithManager(manager, bareRequest)).toEqual([false, '', []]);
   });
 });
 

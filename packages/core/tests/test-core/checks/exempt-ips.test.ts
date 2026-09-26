@@ -225,7 +225,7 @@ describe('exemptIps acceptance checklist (middleware level)', () => {
     const response = await run(components, request);
     expect(response).not.toBeNull();
     expect(response!.statusCode).toBe(403);
-    expect(components.middlewareProtocol.suspiciousRequestCounts.get(EXEMPT_IP)).toBe(1);
+    expect(components.middlewareProtocol.suspiciousRequestCounts.get(EXEMPT_IP)?.get('xss')).toBe(1);
   });
 
   it('10. an IPv4-mapped exempt form skips rate limiting like its IPv4 twin', async () => {

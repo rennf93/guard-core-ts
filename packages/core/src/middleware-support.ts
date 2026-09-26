@@ -123,8 +123,8 @@ export async function initializeSecurityMiddleware(
     new IpSecurityCheck(middlewareProtocol, registry.ipBanHandler),
     new CloudProviderCheck(middlewareProtocol, registry.cloudHandler),
     new UserAgentCheck(middlewareProtocol),
-    new RateLimitCheck(middlewareProtocol),
-    new SuspiciousActivityCheck(middlewareProtocol, registry.susPatternsHandler),
+    new RateLimitCheck(middlewareProtocol, registry.ipBanHandler),
+    new SuspiciousActivityCheck(middlewareProtocol, registry.susPatternsHandler, registry.ipBanHandler),
     new CustomRequestCheck(middlewareProtocol),
   ], logger);
 
