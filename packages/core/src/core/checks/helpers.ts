@@ -152,7 +152,7 @@ export async function detectPenetrationPatterns(
   if (penetrationEnabled && !shouldBypassCheckFn('penetration', routeConfig)) {
     const { scanRequestWithManager } = await import('../../utils.js');
     if (susPatternsManager) {
-      return scanRequestWithManager(susPatternsManager, request);
+      return scanRequestWithManager(susPatternsManager, request, config);
     }
     const { detectPenetrationAttempt } = await import('../../utils.js');
     return detectPenetrationAttempt(request);

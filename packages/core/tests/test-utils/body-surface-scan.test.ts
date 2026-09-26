@@ -341,3 +341,212 @@ describe('detectionBinaryMinRunLength config validation', () => {
     expect(manager.detectionBinaryMinRunLength).toBe(32);
   });
 });
+
+describe('excluded detection fields config (guard-core parity)', () => {
+  const SCRIPT = '<script>alert(1)</script>';
+  const JSON_CT = 'application/json';
+  const FORM_CT = 'application/x-www-form-urlencoded';
+
+  it('defaults both exclusion sets to empty', () => {
+    const parsed = SecurityConfigSchema.parse({});
+    expect(parsed.excludedDetectionParams).toEqual([]);
+    expect(parsed.excludedDetectionBodyFields).toEqual([]);
+  });
+
+  it('skips an excluded query parameter entirely while siblings still scan', async () => {
+    const manager = await makeManager();
+    const config = createTestConfig({ excludedDetectionParams: ['search'] });
+    const [excludedHit] = await scanRequestWithManager(
+      manager,
+      createMockRequest({ queryParams: { search: SCRIPT } }),
+      config,
+    );
+    expect(excludedHit).toBe(false);
+
+    const [siblingHit] = await scanRequestWithManager(
+      manager,
+      createMockRequest({ queryParams: { search: 'benign', note: SCRIPT } }),
+      config,
+    );
+    expect(siblingHit).toBe(true);
+  });
+
+  it('lowercases the query name but matches entries verbatim', async () => {
+    const manager = await makeManager();
+    const [suppressed] = await scanRequestWithManager(
+      manager,
+      createMockRequest({ queryParams: { SEARCH: SCRIPT } }),
+      createTestConfig({ excludedDetectionParams: ['search'] }),
+    );
+    expect(suppressed).toBe(false);
+
+    const [stillHits] = await scanRequestWithManager(
+      manager,
+      createMockRequest({ queryParams: { search: SCRIPT } }),
+      createTestConfig({ excludedDetectionParams: ['SEARCH'] }),
+    );
+    expect(stillHits).toBe(true);
+  });
+
+  it('keeps param and body-field exclusions on their own surfaces', async () => {
+    const manager = await makeManager();
+    const jsonBody = new TextEncoder().encode(JSON.stringify({ search: SCRIPT }));
+
+    const [bodyStillScanned] = await scanRequestWithManager(
+      manager,
+      bodyRequest({ 'content-type': JSON_CT }, jsonBody),
+      createTestConfig({ excludedDetectionParams: ['search'] }),
+    );
+    expect(bodyStillScanned).toBe(true);
+
+    const [queryStillScanned] = await scanRequestWithManager(
+      manager,
+      createMockRequest({ queryParams: { search: SCRIPT } }),
+      createTestConfig({ excludedDetectionBodyFields: ['search'] }),
+    );
+    expect(queryStillScanned).toBe(true);
+  });
+
+  it('skips an excluded JSON key and its whole subtree, siblings still scan', async () => {
+    const manager = await makeManager();
+    const config = createTestConfig({ excludedDetectionBodyFields: ['content'] });
+
+    const [nestedExcluded] = await scanRequestWithManager(
+      manager,
+      bodyRequest(
+        { 'content-type': JSON_CT },
+        new TextEncoder().encode(JSON.stringify({ messages: [{ role: 'user', content: SCRIPT }] })),
+      ),
+      config,
+    );
+    expect(nestedExcluded).toBe(false);
+
+    const [nonExcluded] = await scanRequestWithManager(
+      manager,
+      bodyRequest(
+        { 'content-type': JSON_CT },
+        new TextEncoder().encode(JSON.stringify({ outer: { note: SCRIPT } })),
+      ),
+      config,
+    );
+    expect(nonExcluded).toBe(true);
+
+    const [siblingScanned] = await scanRequestWithManager(
+      manager,
+      bodyRequest(
+        { 'content-type': JSON_CT },
+        new TextEncoder().encode(JSON.stringify({ content: SCRIPT, note: SCRIPT })),
+      ),
+      config,
+    );
+    expect(siblingScanned).toBe(true);
+
+    const [arrayRecursed] = await scanRequestWithManager(
+      manager,
+      bodyRequest(
+        { 'content-type': JSON_CT },
+        new TextEncoder().encode(JSON.stringify([{ note: SCRIPT }])),
+      ),
+      createTestConfig({ excludedDetectionBodyFields: ['safe'] }),
+    );
+    expect(arrayRecursed).toBe(true);
+  });
+
+  it('skips an excluded urlencoded pair while other fields still scan', async () => {
+    const manager = await makeManager();
+    const form = new TextEncoder().encode(`message=${encodeURIComponent(SCRIPT)}&other=hi`);
+
+    const [excludedField] = await scanRequestWithManager(
+      manager,
+      bodyRequest({ 'content-type': FORM_CT }, form),
+      createTestConfig({ excludedDetectionBodyFields: ['message'] }),
+    );
+    expect(excludedField).toBe(false);
+
+    const [siblingField] = await scanRequestWithManager(
+      manager,
+      bodyRequest({ 'content-type': FORM_CT }, form),
+      createTestConfig({ excludedDetectionBodyFields: ['other'] }),
+    );
+    expect(siblingField).toBe(true);
+  });
+
+  it('skips excluded multipart parts but never a part without a name', async () => {
+    const manager = await makeManager();
+
+    const [excludedTextPart] = await scanRequestWithManager(
+      manager,
+      bodyRequest({ 'content-type': MULTIPART_CONTENT_TYPE }, textPartBody('note', SCRIPT)),
+      createTestConfig({ excludedDetectionBodyFields: ['note'] }),
+    );
+    expect(excludedTextPart).toBe(false);
+
+    const [otherTextPart] = await scanRequestWithManager(
+      manager,
+      bodyRequest({ 'content-type': MULTIPART_CONTENT_TYPE }, textPartBody('note', SCRIPT)),
+      createTestConfig({ excludedDetectionBodyFields: ['other'] }),
+    );
+    expect(otherTextPart).toBe(true);
+
+    const [excludedFilePart] = await scanRequestWithManager(
+      manager,
+      bodyRequest(
+        { 'content-type': MULTIPART_CONTENT_TYPE },
+        filePartBody('a.txt', new TextEncoder().encode(SCRIPT)),
+      ),
+      createTestConfig({ excludedDetectionBodyFields: ['upload'] }),
+    );
+    expect(excludedFilePart).toBe(false);
+
+    const [unnamedPart] = await scanRequestWithManager(
+      manager,
+      bodyRequest(
+        { 'content-type': MULTIPART_CONTENT_TYPE },
+        new TextEncoder().encode(`--B0\r\nContent-Disposition: form-data\r\n\r\n${SCRIPT}\r\n--B0--\r\n`),
+      ),
+      createTestConfig({ excludedDetectionBodyFields: ['file'] }),
+    );
+    expect(unnamedPart).toBe(true);
+  });
+
+  it('still scans the raw query value when every embedded leaf is excluded', async () => {
+    // Reference semantics verified against the engine (defense in depth):
+    // the excluded body field shapes the embedded walk, but the raw value
+    // itself still scans afterwards, so a query JSON whose only key is
+    // excluded still detects through the raw text.
+    const manager = await makeManager();
+    const config = createTestConfig({ excludedDetectionBodyFields: ['search'] });
+
+    const [excludedLeafOnly] = await scanRequestWithManager(
+      manager,
+      createMockRequest({ queryParams: { v: JSON.stringify({ search: SCRIPT }) } }),
+      config,
+    );
+    expect(excludedLeafOnly).toBe(true);
+
+    const [siblingLeaf] = await scanRequestWithManager(
+      manager,
+      createMockRequest({ queryParams: { v: JSON.stringify({ search: SCRIPT, note: SCRIPT }) } }),
+      config,
+    );
+    expect(siblingLeaf).toBe(true);
+  });
+
+  it('keeps current behavior when no exclusions are configured', async () => {
+    const manager = await makeManager();
+    const [jsonHit] = await scanRequestWithManager(
+      manager,
+      bodyRequest(
+        { 'content-type': JSON_CT },
+        new TextEncoder().encode(JSON.stringify({ search: SCRIPT })),
+      ),
+    );
+    expect(jsonHit).toBe(true);
+
+    const [queryHit] = await scanRequestWithManager(
+      manager,
+      createMockRequest({ queryParams: { search: SCRIPT } }),
+    );
+    expect(queryHit).toBe(true);
+  });
+});

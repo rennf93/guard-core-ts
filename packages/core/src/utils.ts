@@ -230,6 +230,35 @@ interface ScanBudget {
   chars: number;
 }
 
+/**
+ * Exclusion sets resolved from the config (reference
+ * excluded_detection_params / excluded_detection_body_fields). Entries stay
+ * verbatim (Python's _STR_SET_ADAPTER stores them as given); scanned names
+ * and keys are lowercased before the membership test, exactly like the
+ * reference's `key.lower() in excluded_params` checks.
+ */
+interface ScanExclusions {
+  params: ReadonlySet<string>;
+  bodyFields: ReadonlySet<string>;
+}
+
+function resolveScanExclusions(
+  config?: Pick<ResolvedSecurityConfig, 'excludedDetectionParams' | 'excludedDetectionBodyFields'>,
+): ScanExclusions {
+  return {
+    params: new Set(config?.excludedDetectionParams ?? []),
+    bodyFields: new Set(config?.excludedDetectionBodyFields ?? []),
+  };
+}
+
+function isExcludedParam(exclusions: ScanExclusions, key: string): boolean {
+  return exclusions.params.has(key.toLowerCase());
+}
+
+function isExcludedBodyField(exclusions: ScanExclusions, name: string): boolean {
+  return exclusions.bodyFields.has(name.toLowerCase());
+}
+
 function scanBudgetExhausted(budget: ScanBudget, value: string): boolean {
   budget.values++;
   if (budget.values > MAX_SCAN_VALUES) return true;
@@ -241,14 +270,16 @@ function scanBudgetExhausted(budget: ScanBudget, value: string): boolean {
 /**
  * Shared SusPatternsManager backing the standalone detectPenetrationAttempt
  * entry point, mirroring the reference's configured sus_patterns_handler
- * singleton: constructed once, reused across requests.
+ * singleton: constructed once, reused across requests. The parsed default
+ * config rides along so the scan routing can read its exclusion fields.
  */
-let defaultManagerPromise: Promise<SusPatternsManager> | null = null;
-function getDefaultSusPatternsManager(): Promise<SusPatternsManager> {
+let defaultManagerPromise: Promise<{ manager: SusPatternsManager; config: ResolvedSecurityConfig }> | null = null;
+function getDefaultSusPatternsManager(): Promise<{ manager: SusPatternsManager; config: ResolvedSecurityConfig }> {
   defaultManagerPromise ??= (async () => {
     const { SusPatternsManager } = await import('./handlers/sus-patterns.js');
     const { SecurityConfigSchema } = await import('./models/config.js');
-    return new SusPatternsManager(SecurityConfigSchema.parse({}), defaultLogger);
+    const config = SecurityConfigSchema.parse({});
+    return { manager: new SusPatternsManager(config, defaultLogger), config };
   })();
   return defaultManagerPromise;
 }
@@ -279,18 +310,31 @@ function buildThreatMessage(result: DetectionResult): string {
  * non-body values are labeled with the `:embedded_json` context suffix so the
  * engine's per-context gates (recon bare-word rule, source-extension probe
  * rule) apply to them.
+ *
+ * `config`, when given, activates the reference's excluded-field surface:
+ * `excludedDetectionParams` skips a query parameter's whole pair
+ * (`key.lower() in excluded_params` in _scan_query_params) and
+ * `excludedDetectionBodyFields` skips urlencoded pairs and multipart parts
+ * by field name and whole JSON subtrees by key at any nesting depth (the
+ * body walk and the embedded-JSON walks of query and header values all
+ * honor it, like the reference threading excluded_body_fields through
+ * _scan_form_body, _scan_multipart_part, _scan_query_param_value and
+ * _scan_normal_header_component).
  */
 export async function scanRequestWithManager(
   manager: SusPatternsManager,
   request: GuardRequest,
+  config?: Pick<ResolvedSecurityConfig, 'excludedDetectionParams' | 'excludedDetectionBodyFields'>,
 ): Promise<[boolean, string]> {
   const clientIp = request.clientHost ?? 'unknown';
   const budget: ScanBudget = { values: 0, chars: 0 };
+  const exclusions = resolveScanExclusions(config);
 
   for (const [key, value] of Object.entries(request.queryParams)) {
+    if (isExcludedParam(exclusions, key)) continue;
     const nameHit = await detectComponent(manager, key, `query_param:${key}`, clientIp, budget);
     if (nameHit[0]) return [true, `Query param name '${key}': ${nameHit[1]}`];
-    const valueHit = await detectValueEnhanced(manager, value, `query_param:${key}`, clientIp, budget);
+    const valueHit = await detectValueEnhanced(manager, value, `query_param:${key}`, clientIp, budget, exclusions.bodyFields);
     if (valueHit[0]) return [true, `Query param '${key}': ${valueHit[1]}`];
   }
 
@@ -305,11 +349,11 @@ export async function scanRequestWithManager(
     if (headerName.toLowerCase().startsWith('sec-')) continue;
     const nameHit = await detectComponent(manager, headerName, `header:${headerName}`, clientIp, budget);
     if (nameHit[0]) return [true, `Header name '${headerName}': ${nameHit[1]}`];
-    const valueHit = await detectValueEnhanced(manager, headerValue, `header:${headerName}`, clientIp, budget);
+    const valueHit = await detectValueEnhanced(manager, headerValue, `header:${headerName}`, clientIp, budget, exclusions.bodyFields);
     if (valueHit[0]) return [true, `Header '${headerName}': ${valueHit[1]}`];
   }
 
-  return scanBodySurface(manager, request, clientIp, budget);
+  return scanBodySurface(manager, request, clientIp, budget, exclusions);
 }
 
 async function scanBodySurface(
@@ -317,6 +361,7 @@ async function scanBodySurface(
   request: GuardRequest,
   clientIp: string,
   budget: ScanBudget,
+  exclusions: ScanExclusions,
 ): Promise<[boolean, string]> {
   let rawBody: string;
   try {
@@ -334,10 +379,11 @@ async function scanBodySurface(
 
   if (contentType.includes('application/x-www-form-urlencoded')) {
     for (const { name, value } of parseFormPairs(rawBody)) {
+      if (isExcludedBodyField(exclusions, name)) continue;
       const nameHit = await detectComponent(manager, name, 'request_body', clientIp, budget);
       if (nameHit[0]) return [true, `Form field name '${name}': ${nameHit[1]}`];
       const valueHit = await detectValueEnhanced(
-        manager, value, 'request_body:form_field', clientIp, budget,
+        manager, value, 'request_body:form_field', clientIp, budget, exclusions.bodyFields,
       );
       if (valueHit[0]) return [true, `Request body field '${name}': ${valueHit[1]}`];
     }
@@ -345,12 +391,18 @@ async function scanBodySurface(
   }
 
   if (contentType.includes('multipart/form-data')) {
-    return scanMultipartBody(manager, rawBody, rawContentType, clientIp, budget);
+    return scanMultipartBody(manager, rawBody, rawContentType, clientIp, budget, exclusions);
   }
 
   if (contentType.includes('json')) {
-    const jsonHit = await scanJsonContent(manager, rawBody, 'request_body', clientIp, budget);
-    if (jsonHit[0]) return jsonHit;
+    const [jsonThreat, jsonInfo, parsedClean] = await scanJsonContent(manager, rawBody, 'request_body', clientIp, budget, exclusions.bodyFields);
+    // A clean parse is final: the reference returns the walk result without
+    // a blob rescan (json_hit is not None), so excluded subtrees stay
+    // excluded. Only a parse failure falls through to the raw blob.
+    if (parsedClean) {
+      if (jsonThreat) return [true, jsonInfo];
+      return [false, ''];
+    }
   }
 
   const blobHit = await detectValueEnhanced(manager, rawBody, 'request_body', clientIp, budget);
@@ -373,6 +425,7 @@ async function scanMultipartBody(
   rawContentType: string,
   clientIp: string,
   budget: ScanBudget,
+  exclusions: ScanExclusions,
 ): Promise<[boolean, string]> {
   const [, params] = parseMediaTypeParams(rawContentType);
   const parts = parseMultipartParts(rawBody, params['boundary'] ?? '');
@@ -384,12 +437,14 @@ async function scanMultipartBody(
   for (const part of parts) {
     const entries = multipartPartEntries(part, manager.detectionBinaryMinRunLength);
     if (entries.length === 0) continue;
+    const exclusionKey = entries[0].exclusionKey;
+    if (exclusionKey !== null && isExcludedBodyField(exclusions, exclusionKey)) continue;
     const label = entries[0].label;
     const nameHit = await detectComponent(manager, label, 'request_body', clientIp, budget);
     if (nameHit[0]) return [true, `Multipart field name '${label}': ${nameHit[1]}`];
     for (const entry of entries) {
       const valueHit = await detectValueEnhanced(
-        manager, entry.value, 'request_body:multipart_field', clientIp, budget,
+        manager, entry.value, 'request_body:multipart_field', clientIp, budget, exclusions.bodyFields,
       );
       if (valueHit[0]) return [true, `Request body field '${label}': ${valueHit[1]}`];
     }
@@ -401,8 +456,9 @@ async function scanMultipartBody(
  * Embedded-JSON pre-scan (reference _check_embedded_json): when the scanned
  * value parses to an object or array, its leaves are scanned under
  * `{context}:embedded_json` before the raw value itself runs through the
- * engine. The reference skips it for the body context, where JSON content is
- * walked once by scanJsonContent instead.
+ * engine, with excluded body fields skipping whole JSON subtrees by key.
+ * The reference skips it for the body context, where JSON content is walked
+ * once by scanJsonContent instead.
  */
 async function detectValueEnhanced(
   manager: SusPatternsManager,
@@ -410,12 +466,13 @@ async function detectValueEnhanced(
   context: string,
   clientIp: string,
   budget: ScanBudget,
+  excludedBodyFields?: ReadonlySet<string>,
 ): Promise<[boolean, string]> {
   if (scanBudgetExhausted(budget, value)) return [false, ''];
 
   if (context !== 'request_body') {
-    const jsonHit = await scanJsonContent(manager, value, `${context}:embedded_json`, clientIp, budget);
-    if (jsonHit[0]) return jsonHit;
+    const [jsonThreat, jsonInfo] = await scanJsonContent(manager, value, `${context}:embedded_json`, clientIp, budget, excludedBodyFields);
+    if (jsonThreat) return [true, jsonInfo];
   }
 
   let result: DetectionResult;
@@ -454,6 +511,12 @@ async function detectComponent(
  * parsed JSON, scans operator-shaped dict keys (`$where`, `$ne`, ...) and
  * every scalar leaf under the given context, capping recursion at
  * MAX_JSON_DEPTH (deeper subtrees serialize to text and scan as one value).
+ * Keys in `excludedBodyFields` (matched lowercased against verbatim entries)
+ * skip their whole subtree before the operator and name checks. The third
+ * element reports whether the parse was clean (object or array root): the
+ * body routing uses it to decide between the walk result (final) and the
+ * raw blob fallback, exactly like _scan_request_body's json_hit is-not-None
+ * check.
  */
 async function scanJsonContent(
   manager: SusPatternsManager,
@@ -461,15 +524,17 @@ async function scanJsonContent(
   context: string,
   clientIp: string,
   budget: ScanBudget,
-): Promise<[boolean, string]> {
+  excludedBodyFields?: ReadonlySet<string>,
+): Promise<[boolean, string, boolean]> {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch {
-    return [false, ''];
+    return [false, '', false];
   }
-  if (typeof parsed !== 'object' || parsed === null) return [false, ''];
-  return scanJsonValue(manager, parsed, '', context, clientIp, budget, 1);
+  if (typeof parsed !== 'object' || parsed === null) return [false, '', false];
+  const hit = await scanJsonValue(manager, parsed, '', context, clientIp, budget, 1, excludedBodyFields);
+  return [hit[0], hit[1], true];
 }
 
 async function scanJsonValue(
@@ -480,11 +545,12 @@ async function scanJsonValue(
   clientIp: string,
   budget: ScanBudget,
   depth: number,
+  excludedBodyFields?: ReadonlySet<string>,
 ): Promise<[boolean, string]> {
   if (Array.isArray(value)) {
     if (depth >= MAX_JSON_DEPTH) return scanCappedJsonSubtree(manager, value, label, context, clientIp, budget);
     for (const item of value) {
-      const hit = await scanJsonValue(manager, item, label, context, clientIp, budget, depth + 1);
+      const hit = await scanJsonValue(manager, item, label, context, clientIp, budget, depth + 1, excludedBodyFields);
       if (hit[0]) return hit;
     }
     return [false, ''];
@@ -492,16 +558,17 @@ async function scanJsonValue(
   if (typeof value === 'object' && value !== null) {
     if (depth >= MAX_JSON_DEPTH) return scanCappedJsonSubtree(manager, value, label, context, clientIp, budget);
     for (const [key, item] of Object.entries(value)) {
+      if (excludedBodyFields?.has(key.toLowerCase())) continue;
       const keyHit = await scanJsonKey(manager, key, context, clientIp, budget);
       if (keyHit[0]) return [true, `JSON key '${key}': ${keyHit[1]}`];
-      const hit = await scanJsonValue(manager, item, key, context, clientIp, budget, depth + 1);
+      const hit = await scanJsonValue(manager, item, key, context, clientIp, budget, depth + 1, excludedBodyFields);
       if (hit[0]) return hit;
     }
     return [false, ''];
   }
 
   const hit = await detectValueEnhanced(
-    manager, String(value), context, clientIp, budget,
+    manager, String(value), context, clientIp, budget, excludedBodyFields,
   );
   if (!hit[0]) return [false, ''];
   return [true, label ? `Request body field '${label}': ${hit[1]}` : hit[1]];
@@ -550,8 +617,8 @@ async function scanCappedJsonSubtree(
 export async function detectPenetrationAttempt(
   request: GuardRequest,
 ): Promise<[boolean, string]> {
-  const manager = await getDefaultSusPatternsManager();
-  return scanRequestWithManager(manager, request);
+  const { manager, config } = await getDefaultSusPatternsManager();
+  return scanRequestWithManager(manager, request, config);
 }
 
 export function logActivity(
