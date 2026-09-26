@@ -24,7 +24,7 @@ const BINARY_ARTIFACT_RANGES: ReadonlyArray<readonly [number, number]> = [
   [0xdc80, 0xdcff],
 ];
 
-function isBinaryArtifact(cp: number): boolean {
+export function isBinaryArtifact(cp: number): boolean {
   return BINARY_ARTIFACT_RANGES.some(([lo, hi]) => cp >= lo && cp <= hi);
 }
 
