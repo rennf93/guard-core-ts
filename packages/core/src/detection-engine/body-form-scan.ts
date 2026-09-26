@@ -50,9 +50,13 @@ export interface MultipartPart {
 }
 
 /** One scanned entry of a multipart part, mirroring the
- *  (exclusion_key, label, value) tuples of _multipart_part_entries. */
+ *  (exclusion_key, label, value) tuples of _multipart_part_entries.
+ *  exclusionKey is the disposition name or null when the part carries no
+ *  name parameter (a null exclusion key is never suppressible by the
+ *  excluded-body-fields config, exactly like the reference). */
 export interface MultipartEntry {
   label: string;
+  exclusionKey: string | null;
   value: string;
 }
 
@@ -485,12 +489,12 @@ function appendMultipartLeafOrContainer(
 /** partPayloadEntries mirrors _part_payload_entries: a binary-like named file
  *  part's payload reduces to its printable islands, an empty payload yields
  *  no entries, anything else keeps the full payload as one entry. */
-function partPayloadEntries(label: string, filename: string | null, payload: string, minRunLength: number): MultipartEntry[] {
+function partPayloadEntries(label: string, exclusionKey: string | null, filename: string | null, payload: string, minRunLength: number): MultipartEntry[] {
   if (filename !== null && valueIsBinaryLike(payload)) {
-    return extractBinaryIslands(payload, minRunLength).map((island) => ({ label, value: island }));
+    return extractBinaryIslands(payload, minRunLength).map((island) => ({ label, exclusionKey, value: island }));
   }
   if (!payload) return [];
-  return [{ label, value: payload }];
+  return [{ label, exclusionKey, value: payload }];
 }
 
 /**
@@ -509,11 +513,13 @@ export function multipartPartEntries(part: MultipartPart, minRunLength: number):
   const entries: MultipartEntry[] = [];
   if (filename !== null) {
     const sanitized = filename.replace(/"/g, '').replace(/'/g, '');
-    entries.push({ label, value: `filename="${sanitized}"` });
+    entries.push({ label, exclusionKey: name, value: `filename="${sanitized}"` });
   }
   for (const header of part.headers) {
-    entries.push({ label, value: `${header.name}: ${header.value}` });
+    entries.push({ label, exclusionKey: name, value: `${header.name}: ${header.value}` });
   }
-  entries.push(...partPayloadEntries(label, filename, part.payload, minRunLength));
+  for (const island of partPayloadEntries(label, name, filename, part.payload, minRunLength)) {
+    entries.push({ label, exclusionKey: name, value: island.value });
+  }
   return entries;
 }
