@@ -32,6 +32,7 @@ import {
 import type { CompiledTableEntry } from '../detection-engine/patterns/index.js';
 import {
   DETECTION_RAW_VIEW_PATTERN_SOURCES,
+  DETECTION_RECON_RAW_VIEW_PATTERN_SOURCES,
   DETECTION_URL_DECODED_VIEW_PATTERN_SOURCES,
 } from '../detection-engine/patterns/pattern-table.js';
 import { _PATH_TRAVERSAL_DECODED_SHAPE_RE } from '../detection-engine/patterns/sources.js';
@@ -129,6 +130,37 @@ function countCodePoints(text: string): number {
   return count;
 }
 
+/**
+ * Keep only the raw-pass results whose (pattern, match text) pair an earlier
+ * view has already reported. Threats and matched patterns are parallel lists
+ * (one append per match), so a raw-view sighting of a pattern over text the
+ * processed views already matched is the same evidence and must not inflate
+ * the threat score (Python `_drop_view_duplicate_threats`).
+ */
+function dropViewDuplicateThreats(
+  seenThreats: ReadonlyArray<InternalRegexThreat>,
+  newThreats: ReadonlyArray<InternalRegexThreat>,
+  newMatched: readonly string[],
+): { threats: InternalRegexThreat[]; matchedPatterns: string[] } {
+  const seen = new Map<string, Set<string>>();
+  const remember = (pattern: string, match: string): void => {
+    const matches = seen.get(pattern);
+    if (matches) matches.add(match);
+    else seen.set(pattern, new Set([match]));
+  };
+  for (const threat of seenThreats) remember(threat.pattern, threat.match);
+  const keptThreats: InternalRegexThreat[] = [];
+  const keptMatched: string[] = [];
+  for (let i = 0; i < newThreats.length; i++) {
+    const threat = newThreats[i] as InternalRegexThreat;
+    if (seen.get(threat.pattern)?.has(threat.match)) continue;
+    remember(threat.pattern, threat.match);
+    keptThreats.push(threat);
+    keptMatched.push(newMatched[i] ?? threat.pattern);
+  }
+  return { threats: keptThreats, matchedPatterns: keptMatched };
+}
+
 export class SusPatternsManager {
   private preprocessor: ContentPreprocessor;
   private semantic: SemanticAnalyzer;
@@ -198,7 +230,14 @@ export class SusPatternsManager {
   ): boolean {
     const isRawViewPattern = DETECTION_RAW_VIEW_PATTERN_SOURCES.has(source);
     const isUrlDecodedViewPattern = DETECTION_URL_DECODED_VIEW_PATTERN_SOURCES.has(source);
-    if (rawViewOnly === true) return isUrlDecodedViewPattern || !isRawViewPattern;
+    const isReconRawViewPattern = DETECTION_RECON_RAW_VIEW_PATTERN_SOURCES.has(source);
+    // Recon rows also run on the raw view: the processed views fold LDAP hex
+    // escapes before the tables run, so separator-prefixed probes such as
+    // `\default` only survive there (upstream commit 81cf07f1,
+    // DETECTION_RECON_RAW_VIEW_PATTERN_SOURCES).
+    if (rawViewOnly === true) {
+      return isUrlDecodedViewPattern || !(isRawViewPattern || isReconRawViewPattern);
+    }
     if (urlDecodedViewOnly === true) return isRawViewPattern || !isUrlDecodedViewPattern;
     if (rawViewOnly === false) return isRawViewPattern || isUrlDecodedViewPattern;
     return false;
@@ -390,9 +429,15 @@ export class SusPatternsManager {
     const mainPass = await this.checkRegexPatterns(processedContent, context, correlationId, { rawViewOnly: false });
     const rawViewContent = this.preprocessor.preprocessSignalPreserving(content);
     const rawPass = await this.checkRegexPatterns(rawViewContent, context, correlationId, { rawViewOnly: true });
+    // The raw view rescans rows that already ran on the processed views (now
+    // including the recon rows), so a row matching both views on the same
+    // text must be reported once (Python `_merge_raw_view_results`: merge
+    // order processed-then-raw with the (pattern, match) dedup applied to
+    // the raw pass).
+    const rawDedup = dropViewDuplicateThreats(mainPass.threats, rawPass.threats, rawPass.matchedPatterns);
 
-    const regexThreats = [...mainPass.threats, ...rawPass.threats];
-    const matchedPatterns = [...mainPass.matchedPatterns, ...rawPass.matchedPatterns];
+    const regexThreats = [...mainPass.threats, ...rawDedup.threats];
+    const matchedPatterns = [...mainPass.matchedPatterns, ...rawDedup.matchedPatterns];
 
     const decodedViewThreat = this.checkDecodedViewPathTraversal(processedContent, rawViewContent);
     if (decodedViewThreat !== null) {
