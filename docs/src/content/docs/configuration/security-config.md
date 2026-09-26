@@ -112,7 +112,7 @@ whitelist match.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `blockCloudProviders` | `('AWS' \| 'GCP' \| 'Azure')[]` | `[]` | Cloud providers to block |
+| `blockCloudProviders` | `('AWS' \| 'GCP' \| 'Azure')[]` | `[]` | Cloud providers to block. Requests whose IP falls in a selected provider's refreshed ranges get 403; routes can override the list per-route via the `blockCloudProviders` route selector, and whitelist/exempt IPs skip the check |
 | `cloudIpRefreshInterval` | `number` | `3600` | Seconds between cloud IP range refreshes (60-86400) |
 
 ## GeoIP
