@@ -8,6 +8,10 @@ export class CloudProviderCheck extends SecurityCheck {
   get checkName(): string { return 'cloud_provider'; }
 
   async check(request: GuardRequest): Promise<GuardResponse | null> {
+    /* Whitelist and exempt_ips matches skip the cloud-provider check
+       (reference CloudProviderCheck.check). */
+    if (request.state.isWhitelisted === true || request.state.isExempt === true) return null;
+
     const clientIp = request.clientHost;
     if (!clientIp) return null;
 

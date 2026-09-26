@@ -26,6 +26,12 @@ export class SuspiciousActivityCheck extends SecurityCheck {
   get checkName(): string { return 'suspicious_activity'; }
 
   async check(request: GuardRequest): Promise<GuardResponse | null> {
+    /* Whitelist matches skip penetration detection entirely (reference
+       SuspiciousActivityCheck.check). An exempt_ips match deliberately does
+       NOT skip here: detection, its violation counting and its escalation
+       still run for exempt IPs, exactly like the reference. */
+    if (request.state.isWhitelisted === true) return null;
+
     if (!this.config.enablePenetrationDetection) return null;
 
     const clientIp = request.clientHost;

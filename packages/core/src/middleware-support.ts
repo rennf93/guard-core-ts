@@ -120,7 +120,7 @@ export async function initializeSecurityMiddleware(
     new CustomValidatorsCheck(middlewareProtocol),
     new TimeWindowCheck(middlewareProtocol, validator),
     new CloudIpRefreshCheck(middlewareProtocol),
-    new IpSecurityCheck(middlewareProtocol),
+    new IpSecurityCheck(middlewareProtocol, registry.ipBanHandler),
     new CloudProviderCheck(middlewareProtocol),
     new UserAgentCheck(middlewareProtocol),
     new RateLimitCheck(middlewareProtocol),

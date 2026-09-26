@@ -1,6 +1,6 @@
 ---
 title: "SecurityConfig"
-description: "Complete reference for the SecurityConfig Zod schema with all 44 fields"
+description: "Complete reference for the SecurityConfig Zod schema"
 ---
 
 `SecurityConfig` is the central configuration object for all `@guardcore` adapters. It is validated at startup using a Zod schema. All fields have sensible defaults -- you only need to specify what you want to change.
@@ -32,8 +32,25 @@ const resolved = SecurityConfigSchema.parse(config);
 |-------|------|---------|-------------|
 | `whitelist` | `string[] \| null` | `null` | IP/CIDR allowlist. When set, only these IPs are allowed |
 | `blacklist` | `string[]` | `[]` | IP/CIDR blocklist. These IPs are always blocked |
+| `exemptIps` | `string[]` | `[]` | IP/CIDR skip-list for trusted automation. Entries skip rate limiting, the user-agent check and per-route cloud-provider blocks |
 | `whitelistCountries` | `string[]` | `[]` | Two-letter country codes to allow (requires `geoIpHandler` or `geoResolver`) |
 | `blockedCountries` | `string[]` | `[]` | Two-letter country codes to block (requires `geoIpHandler` or `geoResolver`) |
+
+### `exemptIps` vs `whitelist`
+
+`exemptIps` is noise reduction for known-friendly automation (monitoring probes,
+VPN egress, a partner's server), not immunity. A non-empty `whitelist` is also an
+allowlist: every IP not on it is denied by the global IP check, so it cannot be
+used to let a few clients skip throttling on a public API. `exemptIps` is not
+restrictive: every unlisted IP is checked exactly as usual, and a match only sets
+the same skip state a whitelist match sets (rate limiting, user-agent check,
+per-route cloud-provider blocks). Everything else still applies to listed IPs:
+penetration detection (attack payloads are still blocked and counted), the
+blacklist, dynamic IP bans, per-route `requireIp`/`blockIp` rules, the global
+`blockCloudProviders` list, HTTPS enforcement and security headers. Entries
+accept IPv4, IPv6 and CIDR forms, validated at config construction (an invalid
+entry fails closed). The two lists may coexist; an IP on both is simply a
+whitelist match.
 
 ## Rate Limiting
 

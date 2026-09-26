@@ -8,6 +8,10 @@ export class UserAgentCheck extends SecurityCheck {
   get checkName(): string { return 'user_agent'; }
 
   async check(request: GuardRequest): Promise<GuardResponse | null> {
+    /* Whitelist and exempt_ips matches skip the user-agent check (reference
+       UserAgentCheck.check). */
+    if (request.state.isWhitelisted === true || request.state.isExempt === true) return null;
+
     const userAgent = request.headers['user-agent'] ?? '';
     if (!userAgent) return null;
 

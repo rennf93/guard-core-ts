@@ -2,6 +2,10 @@ export interface GuardRequestState {
   guardRouteId?: string;
   guardEndpointId?: string;
   guardDecorator?: unknown;
+  /** Set by IpSecurityCheck: the client IP matched the config whitelist. */
+  isWhitelisted?: boolean;
+  /** Set by IpSecurityCheck: the client IP matched the config exemptIps list. */
+  isExempt?: boolean;
   [key: string]: unknown;
 }
 
