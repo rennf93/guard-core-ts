@@ -43,7 +43,7 @@ app.get('/health', healthHandler);
 
 ## `geoRateLimit(limits)`
 
-Apply different rate limits based on the client's country. Requires a `geoIpHandler` or `geoResolver` in the config.
+Apply different rate limits based on the client's country. Requires a `geoIpHandler` in the config: the middleware resolves the request's country through it, and without one the geo tier is skipped and the global rate limit applies.
 
 **Parameters**:
 - `limits` -- A `Record<string, [number, number]>` mapping country codes to `[maxRequests, windowSeconds]`
@@ -54,7 +54,7 @@ const handler = guard.geoRateLimit({
   GB: [100, 60],
   CN: [10, 60],
   RU: [10, 60],
-  DEFAULT: [50, 60],
+  '*': [50, 60],
 })(async (req, res) => {
   res.json({ data: 'geo-limited' });
 });
@@ -62,7 +62,7 @@ const handler = guard.geoRateLimit({
 app.get('/api/resource', handler);
 ```
 
-Country codes are ISO 3166-1 alpha-2. If a client's country is not in the map, the `DEFAULT` entry is used (if present), otherwise the global rate limit applies.
+Country codes are ISO 3166-1 alpha-2. A country-specific entry wins over the `"*"` fallback tier; if the client's country is not in the map (or cannot be resolved) and no `"*"` entry is present, the global rate limit applies. The geo tier counts per IP and endpoint, like every other endpoint-scoped tier.
 
 ### Combining with other decorators
 
@@ -70,7 +70,7 @@ Country codes are ISO 3166-1 alpha-2. If a client's country is not in the map, t
 const sensitiveHandler = guard.rateLimit(10, 60)(
   guard.geoRateLimit({
     US: [10, 60],
-    DEFAULT: [3, 60],
+    '*': [3, 60],
   })(
     guard.requireAuth('bearer')(async (req, res) => {
       res.json({ sensitive: true });
