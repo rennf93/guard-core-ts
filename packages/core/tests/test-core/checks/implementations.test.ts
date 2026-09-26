@@ -822,9 +822,11 @@ describe('TimeWindowCheck', () => {
 
 describe('CloudProviderCheck', () => {
   let middleware: GuardMiddlewareProtocol;
+  let cloudHandler: { isCloudIp: ReturnType<typeof vi.fn> };
 
   beforeEach(() => {
     middleware = createMockMiddleware();
+    cloudHandler = { isCloudIp: vi.fn().mockReturnValue(false) };
   });
 
   it('returns null when no clientHost', async () => {
@@ -846,11 +848,107 @@ describe('CloudProviderCheck', () => {
     expect(result).toBeNull();
   });
 
-  it('returns null with providers present (current implementation)', async () => {
+  it('returns null when no cloud handler was injected', async () => {
     (middleware.routeResolver as Record<string, unknown>)['getCloudProvidersToCheck'] = () => ['AWS'];
-    const check = new CloudProviderCheck(middleware);
+    const check = new CloudProviderCheck(middleware, null);
     const result = await check.check(createMockRequest());
     expect(result).toBeNull();
+  });
+
+  it('returns null when the handler does not resolve the IP to a selected provider', async () => {
+    (middleware.routeResolver as Record<string, unknown>)['getCloudProvidersToCheck'] = () => ['AWS'];
+    const check = new CloudProviderCheck(middleware, cloudHandler as never);
+    const result = await check.check(createMockRequest());
+    expect(result).toBeNull();
+    expect(cloudHandler.isCloudIp).toHaveBeenCalledWith('1.2.3.4', new Set(['AWS']));
+  });
+
+  it('blocks a cloud IP with 403 when the handler resolves a selected provider', async () => {
+    (middleware.routeResolver as Record<string, unknown>)['getCloudProvidersToCheck'] = () => ['AWS'];
+    cloudHandler.isCloudIp.mockReturnValue(true);
+    const check = new CloudProviderCheck(middleware, cloudHandler as never);
+    const result = await check.check(createMockRequest());
+    expect(result).not.toBeNull();
+    expect(result!.statusCode).toBe(403);
+  });
+
+  it('blocks and reports logged_only action in passive mode', async () => {
+    middleware = createMockMiddleware({ passiveMode: true });
+    (middleware.routeResolver as Record<string, unknown>)['getCloudProvidersToCheck'] = () => ['AWS'];
+    const cloudEvents: Array<[string, string[], boolean]> = [];
+    const decoratorEvents: string[] = [];
+    (middleware.eventBus as Record<string, unknown>)['sendCloudDetectionEvents'] =
+      async (_r: unknown, _ip: string, providers: string[], passiveMode: boolean) => {
+        cloudEvents.push([_ip, providers, passiveMode]);
+      };
+    (middleware.eventBus as Record<string, unknown>)['sendMiddlewareEvent'] =
+      async (type: string, _r: unknown, action: string) => { decoratorEvents.push(`${type}:${action}`); };
+    cloudHandler.isCloudIp.mockReturnValue(true);
+    const check = new CloudProviderCheck(middleware, cloudHandler as never);
+
+    const plain = createMockRequest();
+    expect(await check.check(plain)).toBeNull();
+    expect(cloudEvents).toEqual([['1.2.3.4', ['AWS'], true]]);
+    expect(decoratorEvents).toEqual([]);
+
+    cloudEvents.length = 0;
+    decoratorEvents.length = 0;
+    const rc = new RouteConfig();
+    rc.blockCloudProviders = new Set(['AWS']);
+    const routed = createMockRequest();
+    (routed.state as Record<string, unknown>)['_routeConfig'] = rc;
+    expect(await check.check(routed)).toBeNull();
+    expect(cloudEvents).toEqual([['1.2.3.4', ['AWS'], true]]);
+    expect(decoratorEvents).toEqual(['decorator_violation:logged_only']);
+  });
+
+  it('route bypass ["clouds"] skips provider resolution entirely', async () => {
+    const spy = vi.fn(() => ['AWS']);
+    (middleware.routeResolver as Record<string, unknown>)['shouldBypassCheck'] = () => true;
+    (middleware.routeResolver as Record<string, unknown>)['getCloudProvidersToCheck'] = spy as never;
+    const check = new CloudProviderCheck(middleware, cloudHandler as never);
+    const rc = new RouteConfig();
+    rc.bypassedChecks = new Set(['clouds']);
+    const req = createMockRequest();
+    (req.state as Record<string, unknown>)['_routeConfig'] = rc;
+    expect(await check.check(req)).toBeNull();
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('emits a decorator violation only for route-level provider blocks', async () => {
+    middleware = createMockMiddleware();
+    const cloudEvents: number[] = [];
+    const decoratorEvents: string[] = [];
+    (middleware.eventBus as Record<string, unknown>)['sendCloudDetectionEvents'] =
+      async () => { cloudEvents.push(1); };
+    (middleware.eventBus as Record<string, unknown>)['sendMiddlewareEvent'] =
+      async (type: string) => { decoratorEvents.push(type); };
+    cloudHandler.isCloudIp.mockReturnValue(true);
+    const check = new CloudProviderCheck(middleware, cloudHandler as never);
+
+    (middleware.routeResolver as Record<string, unknown>)['getCloudProvidersToCheck'] = () => ['AWS'];
+    await check.check(createMockRequest());
+    expect(cloudEvents).toEqual([1]);
+    expect(decoratorEvents).toEqual([]);
+
+    cloudEvents.length = 0;
+    decoratorEvents.length = 0;
+    const rc = new RouteConfig();
+    rc.blockCloudProviders = new Set(['AWS']);
+    const routed = createMockRequest();
+    (routed.state as Record<string, unknown>)['_routeConfig'] = rc;
+    await check.check(routed);
+    expect(cloudEvents).toEqual([1]);
+    expect(decoratorEvents).toEqual(['decorator_violation']);
+
+    cloudEvents.length = 0;
+    decoratorEvents.length = 0;
+    const globalOnlyRc = new RouteConfig();
+    const globalOnlyReq = createMockRequest();
+    (globalOnlyReq.state as Record<string, unknown>)['_routeConfig'] = globalOnlyRc;
+    await check.check(globalOnlyReq);
+    expect(cloudEvents).toEqual([1]);
+    expect(decoratorEvents).toEqual([]);
   });
 });
 
