@@ -139,6 +139,7 @@ export class SusPatternsManager {
   private agentHandler: AgentHandlerProtocol | null = null;
   private semanticThreshold: number;
   private threatScoreThreshold: number;
+  private binaryMinRunLength: number;
 
   constructor(
     config: ResolvedSecurityConfig,
@@ -159,6 +160,13 @@ export class SusPatternsManager {
     );
     this.semanticThreshold = config.detectionSemanticThreshold;
     this.threatScoreThreshold = config.detectionThreatScoreThreshold;
+    this.binaryMinRunLength = config.detectionBinaryMinRunLength;
+  }
+
+  /** detection_binary_min_run_length: the printable-run threshold the
+   *  multipart binary-islands reduction hands to the pattern scan. */
+  get detectionBinaryMinRunLength(): number {
+    return this.binaryMinRunLength;
   }
 
   async initializeRedis(redisHandler: RedisManager): Promise<void> {

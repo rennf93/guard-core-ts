@@ -1,5 +1,6 @@
 import ipaddr from 'ipaddr.js';
 
+import { multipartPartEntries, parseFormPairs, parseMediaTypeParams, parseMultipartParts } from './detection-engine/body-form-scan.js';
 import type { ResolvedSecurityConfig } from './models/config.js';
 import { defaultLogger } from './models/logger.js';
 import type { Logger } from './models/logger.js';
@@ -270,7 +271,11 @@ function buildThreatMessage(result: DetectionResult): string {
  * mirrors the reference detect flow in guard_core/_utils/
  * penetration_detection.py + detection_scan.py: query param names and values,
  * the URL path, header names and values, then the body (JSON leaves, form
- * fields, or the raw blob, per content type). JSON leaves embedded inside
+ * fields, multipart parts, or the raw blob, per content type). Multipart
+ * bodies split into parts whose label, filename entry, headers and payload
+ * scan under `request_body:multipart_field` (binary-dense file-part payloads
+ * reduce to printable islands first, bounded by
+ * detectionBinaryMinRunLength). JSON leaves embedded inside
  * non-body values are labeled with the `:embedded_json` context suffix so the
  * engine's per-context gates (recon bare-word rule, source-extension probe
  * rule) apply to them.
@@ -324,10 +329,11 @@ async function scanBodySurface(
     return [false, ''];
   }
 
-  const contentType = (request.headers['content-type'] ?? '').toLowerCase();
+  const rawContentType = request.headers['content-type'] ?? '';
+  const contentType = rawContentType.toLowerCase();
 
   if (contentType.includes('application/x-www-form-urlencoded')) {
-    for (const [name, value] of new URLSearchParams(rawBody)) {
+    for (const { name, value } of parseFormPairs(rawBody)) {
       const nameHit = await detectComponent(manager, name, 'request_body', clientIp, budget);
       if (nameHit[0]) return [true, `Form field name '${name}': ${nameHit[1]}`];
       const valueHit = await detectValueEnhanced(
@@ -338,6 +344,10 @@ async function scanBodySurface(
     return [false, ''];
   }
 
+  if (contentType.includes('multipart/form-data')) {
+    return scanMultipartBody(manager, rawBody, rawContentType, clientIp, budget);
+  }
+
   if (contentType.includes('json')) {
     const jsonHit = await scanJsonContent(manager, rawBody, 'request_body', clientIp, budget);
     if (jsonHit[0]) return jsonHit;
@@ -345,6 +355,45 @@ async function scanBodySurface(
 
   const blobHit = await detectValueEnhanced(manager, rawBody, 'request_body', clientIp, budget);
   if (blobHit[0]) return [true, `Request body: ${blobHit[1]}`];
+  return [false, ''];
+}
+
+/**
+ * Multipart body scan (reference _scan_multipart_body): when the body does
+ * not parse into at least one leaf part (no boundary parameter, boundary
+ * mismatch, no opening boundary), the whole raw body is scanned as one
+ * request_body blob value, like the email parser's is_multipart() == False
+ * fallback. Each leaf part scans its label name, then its filename entry,
+ * header entries and payload entries (islands for a binary-like file part)
+ * under `request_body:multipart_field`.
+ */
+async function scanMultipartBody(
+  manager: SusPatternsManager,
+  rawBody: string,
+  rawContentType: string,
+  clientIp: string,
+  budget: ScanBudget,
+): Promise<[boolean, string]> {
+  const [, params] = parseMediaTypeParams(rawContentType);
+  const parts = parseMultipartParts(rawBody, params['boundary'] ?? '');
+  if (parts.length === 0) {
+    const blobHit = await detectValueEnhanced(manager, rawBody, 'request_body', clientIp, budget);
+    if (blobHit[0]) return [true, `Request body: ${blobHit[1]}`];
+    return [false, ''];
+  }
+  for (const part of parts) {
+    const entries = multipartPartEntries(part, manager.detectionBinaryMinRunLength);
+    if (entries.length === 0) continue;
+    const label = entries[0].label;
+    const nameHit = await detectComponent(manager, label, 'request_body', clientIp, budget);
+    if (nameHit[0]) return [true, `Multipart field name '${label}': ${nameHit[1]}`];
+    for (const entry of entries) {
+      const valueHit = await detectValueEnhanced(
+        manager, entry.value, 'request_body:multipart_field', clientIp, budget,
+      );
+      if (valueHit[0]) return [true, `Request body field '${label}': ${valueHit[1]}`];
+    }
+  }
   return [false, ''];
 }
 
