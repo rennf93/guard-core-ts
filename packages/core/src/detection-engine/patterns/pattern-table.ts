@@ -188,6 +188,23 @@ export const RECON_OPTIONAL_SEPARATOR_PATTERN_SOURCES: ReadonlySet<string> = new
     .map((entry) => entry.source),
 );
 
+/**
+ * Recon rows additionally scanned against the signal-preserving raw view.
+ * The processed views fold LDAP hex escapes ("\de" -> "Þ") before the
+ * pattern tables run, so separator-prefixed probes such as "\default" or
+ * "\default.asp" never reach a recon row there. The raw view keeps them
+ * intact; the leading-separator gate still decides which matches are probes,
+ * so bare words stay innocent exactly as on the processed views. Mirrors
+ * DETECTION_RECON_RAW_VIEW_PATTERN_SOURCES in
+ * guard_core/handlers/_suspatterns_pattern_table.py (upstream commit
+ * 81cf07f1): every recon-category row, derived programmatically.
+ */
+export const DETECTION_RECON_RAW_VIEW_PATTERN_SOURCES: ReadonlySet<string> = new Set(
+  PATTERN_DEFINITIONS
+    .filter((entry) => entry.category === 'recon')
+    .map((entry) => entry.source),
+);
+
 /** Patterns whose matches are suppressed inside binary-dense regions. */
 export const NOISE_PRONE_PATTERN_SOURCES: ReadonlySet<string> = new Set([
   "#\\{(?![^\\}]*\\d{4}-\\d{1,2}-\\d{1,2}(?!\\d))(?=[^\\}]*(?:@[\\w.]+@|\\b\\w+\\s*\\(|['\\\"]?\\d+['\\\"]?\\s*[*/%+\\-]\\s*['\\\"]?\\d+['\\\"]?))[^\\}]*\\}",

@@ -303,13 +303,12 @@ describe('recon gate and raw-view semantics for form fields', () => {
   });
 
   /* The recon bare-word gate accepts a `\default` probe (the matched value
-     starts with a backslash), but the configured preprocessing pipeline folds
-     the LDAP hex escape `\de` into `Þ` before the recon rows run, and the
-     raw-view recon membership (guard-core commit 81cf07f1) is not ported to
-     the TypeScript manager yet, so the probe stays silent here. Pinning the
-     current behavior: raising this expectation is the remaining raw-view
-     recon port item. */
-  it('pins the current backslash-probe behavior in form fields', async () => {
+     starts with a backslash). The configured preprocessing pipeline folds the
+     LDAP hex escape `\de` into `Þ` before the recon rows run, so detection
+     rides on the raw-view recon membership (guard-core commit 81cf07f1): the
+     recon rows join the signal-preserving raw view and the probe fires
+     through the form-field scan. */
+  it('flags a backslash-prefixed recon probe in a form field', async () => {
     const manager = await makeManager();
     const [isThreat] = await scanRequestWithManager(
       manager,
@@ -318,7 +317,7 @@ describe('recon gate and raw-view semantics for form fields', () => {
         new TextEncoder().encode('page=%5Cdefault'),
       ),
     );
-    expect(isThreat).toBe(false);
+    expect(isThreat).toBe(true);
   });
 });
 
