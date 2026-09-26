@@ -43,7 +43,7 @@ export function createMockResponse(statusCode: number, body = ''): GuardResponse
 export function createMockResponseFactory(): GuardResponseFactory {
   return {
     createResponse(content: string, statusCode: number): GuardResponse {
-      return createMockResponse(statusCode, JSON.stringify({ detail: content }));
+      return createMockResponse(statusCode, content);
     },
     createRedirectResponse(url: string, statusCode: number): GuardResponse {
       const resp = createMockResponse(statusCode, '');
@@ -71,7 +71,7 @@ export function createMockMiddleware(
   const responseFactory = createMockResponseFactory();
   const errorResponseFactory = {
     async createErrorResponse(statusCode: number, message: string) {
-      return createMockResponse(statusCode, JSON.stringify({ detail: message }));
+      return createMockResponse(statusCode, message);
     },
     async createHttpsRedirect(request: GuardRequest) {
       const resp = createMockResponse(301, '');
@@ -97,7 +97,7 @@ export function createMockMiddleware(
     geoIpHandler: null,
     guardResponseFactory: responseFactory,
     async createErrorResponse(statusCode: number, message: string) {
-      return createMockResponse(statusCode, JSON.stringify({ detail: message }));
+      return createMockResponse(statusCode, message);
     },
     async refreshCloudIpRanges() {},
   } as unknown as GuardMiddlewareProtocol;
