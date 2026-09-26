@@ -40,6 +40,7 @@ export const SecurityConfigSchema = z.object({
 
   whitelist: z.array(IpOrCidrSchema).nullable().default(null),
   blacklist: z.array(IpOrCidrSchema).default([]),
+  exemptIps: z.array(IpOrCidrSchema).default([]),
 
   whitelistCountries: z.array(z.string().length(2)).default([]),
   blockedCountries: z.array(z.string().length(2)).default([]),

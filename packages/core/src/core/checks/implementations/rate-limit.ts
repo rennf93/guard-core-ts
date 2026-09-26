@@ -8,6 +8,10 @@ export class RateLimitCheck extends SecurityCheck {
   get checkName(): string { return 'rate_limit'; }
 
   async check(request: GuardRequest): Promise<GuardResponse | null> {
+    /* Whitelist and exempt_ips matches skip rate limiting (reference
+       RateLimitCheck.check). */
+    if (request.state.isWhitelisted === true || request.state.isExempt === true) return null;
+
     if (!this.config.enableRateLimiting) return null;
 
     const clientIp = request.clientHost;
