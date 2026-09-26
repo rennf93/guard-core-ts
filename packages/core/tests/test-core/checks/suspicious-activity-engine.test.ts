@@ -38,7 +38,15 @@ describe('SuspiciousActivityCheck runs the full pattern table (middleware level)
   let components: SecurityMiddlewareComponents;
 
   beforeAll(async () => {
-    const config = SecurityConfigSchema.parse({ enableRedis: false, enableRateLimiting: false });
+    /* enableIpBanning off: this file pins pattern-table detection, and the
+       autoban engine now (correctly, at the default threshold of 10) bans
+       the shared attack IP partway through the vector list, which would
+       turn every later vector into an ip-security ban response. */
+    const config = SecurityConfigSchema.parse({
+      enableRedis: false,
+      enableRateLimiting: false,
+      enableIpBanning: false,
+    });
     components = await initializeSecurityMiddleware(config, defaultLogger, createMockResponseFactory());
   });
 
@@ -197,6 +205,6 @@ describe('SuspiciousActivityCheck runs the full pattern table (middleware level)
       makeRequest({ queryParams: { q: '<img src=x onerror=alert(1)>' } }),
     );
     expect(response).toBeNull();
-    expect(passiveComponents.middlewareProtocol.suspiciousRequestCounts.get('1.2.3.4')).toBe(1);
+    expect(passiveComponents.middlewareProtocol.suspiciousRequestCounts.get('1.2.3.4')?.get('xss')).toBe(1);
   });
 });

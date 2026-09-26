@@ -1,11 +1,46 @@
+import type { GuardMiddlewareProtocol } from '../../../protocols/middleware.js';
 import type { GuardRequest } from '../../../protocols/request.js';
 import type { GuardResponse } from '../../../protocols/response.js';
 import type { RouteConfig } from '../../../models/route-config.js';
 import type { RateLimitManager } from '../../../handlers/rate-limit.js';
+import type { IPBanManager } from '../../../handlers/ip-ban.js';
+import { incrementSuspiciousCounts, tryThresholdBan } from '../helpers.js';
 import { SecurityCheck } from '../base.js';
 
 export class RateLimitCheck extends SecurityCheck {
+  private readonly ipBanManager: IPBanManager | null;
+
+  constructor(middleware: GuardMiddlewareProtocol, ipBanManager?: IPBanManager | null) {
+    super(middleware);
+    /* The manager from the handler initializer is shared across requests;
+       when absent (direct construction in tests or standalone pipelines) the
+       check leaves it null and the autoban stage skips instead of building
+       one per request. */
+    this.ipBanManager = ipBanManager ?? null;
+  }
+
   get checkName(): string { return 'rate_limit'; }
+
+  /* Reference RateLimitCheck._record_rate_limit_autoban
+     (guard_core/core/checks/implementations/rate_limit.py): with
+     enableRateLimitAutoBan on, each active-mode (non-passive) violation
+     feeds the 'rate_limit' pseudo-category of the shared suspicious-count
+     structure and runs the same threshold logic as penetration detection
+     (threatBanConfig['rate_limit'] override first, then the flat
+     autoBanThreshold/autoBanDuration). Passive mode never reaches the
+     autoban: the caller returns before it. */
+  private async recordRateLimitAutoBan(
+    request: GuardRequest,
+    clientIp: string,
+    triggerInfo: string,
+  ): Promise<void> {
+    if (!this.config.enableRateLimitAutoBan) return;
+    incrementSuspiciousCounts(this.middleware, clientIp, 'rate_limit');
+    await tryThresholdBan(
+      request, this.config, this.ipBanManager, this.middleware,
+      clientIp, triggerInfo, this.logger, ['rate_limit'], 'rate_limit_exceeded',
+    );
+  }
 
   async check(request: GuardRequest): Promise<GuardResponse | null> {
     /* Whitelist and exempt_ips matches skip rate limiting (reference
@@ -32,6 +67,7 @@ export class RateLimitCheck extends SecurityCheck {
           this.logger.info(`[PASSIVE] Route rate limit exceeded for ${clientIp}`);
           return null;
         }
+        await this.recordRateLimitAutoBan(request, clientIp, 'Route-specific rate limit exceeded');
         return response;
       }
     }
@@ -47,6 +83,7 @@ export class RateLimitCheck extends SecurityCheck {
           this.logger.info(`[PASSIVE] Endpoint rate limit exceeded for ${clientIp}`);
           return null;
         }
+        await this.recordRateLimitAutoBan(request, clientIp, 'Endpoint-specific rate limit exceeded');
         return response;
       }
     }
@@ -69,6 +106,7 @@ export class RateLimitCheck extends SecurityCheck {
         this.logger.info(`[PASSIVE] Global rate limit exceeded for ${clientIp}`);
         return null;
       }
+      await this.recordRateLimitAutoBan(request, clientIp, 'Global rate limit exceeded');
       return response;
     }
 

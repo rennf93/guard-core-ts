@@ -77,11 +77,15 @@ whitelist match.
 
 ## Auto-Banning
 
+Every penetration-detection violation increments the source IP's counter for the matched detection category. When a threshold is crossed, the IP is banned and subsequent requests are blocked with 403 by the IP check. `threatBanConfig` entries fire at their own threshold and duration; everything else falls back to the flat `autoBanThreshold`/`autoBanDuration` pair measured against the IP's total across categories.
+
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `enableIpBanning` | `boolean` | `true` | Enable automatic IP banning |
-| `autoBanThreshold` | `number` | `10` | Suspicious requests before auto-ban |
-| `autoBanDuration` | `number` | `3600` | Ban duration in seconds |
+| `enableIpBanning` | `boolean` | `true` | Enable automatic IP banning. `false` disables ban creation entirely; enforcement of already-active bans is unaffected |
+| `autoBanThreshold` | `number` | `10` | Total violations across categories before auto-ban (fallback when no `threatBanConfig` entry matched) |
+| `autoBanDuration` | `number` | `3600` | Fallback ban duration in seconds |
+| `threatBanConfig` | `Record<string, { threshold: number; duration: number }>` | `{}` | Per-category ban thresholds and durations. Keys are the detection categories (`xss`, `sqli`, `dir_traversal`, `cmd_injection`, ...) plus the `rate_limit` pseudo-category; unknown keys fail validation |
+| `enableRateLimitAutoBan` | `boolean` | `false` | Feed rate-limit violations into the same autoban engine: each active-mode (non-passive) violation increments the `rate_limit` category, with a `threatBanConfig['rate_limit']` override or the flat threshold fallback. Requires `enableIpBanning` to actually ban |
 
 ## User Agent Filtering
 
@@ -210,6 +214,11 @@ const config: SecurityConfig = {
 
   autoBanThreshold: 5,
   autoBanDuration: 7200,
+  threatBanConfig: {
+    sqli: { threshold: 3, duration: 86400 },
+    rate_limit: { threshold: 3, duration: 1800 },
+  },
+  enableRateLimitAutoBan: true,
 
   blockedUserAgents: ['sqlmap', 'nikto', 'nmap', 'masscan'],
 

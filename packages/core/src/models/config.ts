@@ -1,6 +1,7 @@
 import ipaddr from 'ipaddr.js';
 import { z } from 'zod';
 
+import { PATTERN_DEFINITIONS } from '../detection-engine/patterns/pattern-table.js';
 import type { GeoIPHandler } from '../protocols/geo-ip.js';
 import type { GuardRequest } from '../protocols/request.js';
 import type { GuardResponse } from '../protocols/response.js';
@@ -19,6 +20,23 @@ function isValidIpOrCidr(value: string): boolean {
 }
 
 const VALID_CLOUD_PROVIDERS = ['AWS', 'GCP', 'Azure'] as const;
+
+/* Detection categories usable as threat_ban_config keys: the canonical
+   pattern table's categories plus the 'rate_limit' pseudo-category, the TS
+   twin of THREAT_BAN_CONFIG_CATEGORIES in
+   guard_core/_security_config_field_validators.py (ALL_DETECTION_CATEGORIES
+   | {'rate_limit'}). Derived from the table so the two stay in sync. */
+const THREAT_BAN_CONFIG_CATEGORIES: ReadonlySet<string> = new Set([
+  ...new Set(PATTERN_DEFINITIONS.map((entry) => entry.category)),
+  'rate_limit',
+]);
+
+const ThreatBanEntrySchema = z.object({
+  threshold: z.number().int().positive(),
+  duration: z.number().int().positive(),
+});
+
+export type ThreatBanEntry = z.output<typeof ThreatBanEntrySchema>;
 
 const IpOrCidrSchema = z.string().refine(isValidIpOrCidr, 'Invalid IP or CIDR');
 
@@ -49,6 +67,9 @@ export const SecurityConfigSchema = z.object({
 
   autoBanThreshold: z.number().int().positive().default(10),
   autoBanDuration: z.number().int().positive().default(3600),
+
+  threatBanConfig: z.record(z.string(), ThreatBanEntrySchema).default({}),
+  enableRateLimitAutoBan: z.boolean().default(false),
 
   logger: z.custom<Logger>().optional(),
   customLogFile: z.string().nullable().default(null),
@@ -146,6 +167,16 @@ export const SecurityConfigSchema = z.object({
   dynamicRuleInterval: z.number().int().positive().default(300),
 
 }).superRefine((data, ctx) => {
+  const unknownCategories = Object.keys(data.threatBanConfig)
+    .filter((category) => !THREAT_BAN_CONFIG_CATEGORIES.has(category));
+  if (unknownCategories.length > 0) {
+    ctx.addIssue({
+      code: 'custom',
+      message: `Unknown threat categories in threatBanConfig: ${unknownCategories.sort()}. `
+        + `Valid: ${[...THREAT_BAN_CONFIG_CATEGORIES].sort()}`,
+      path: ['threatBanConfig'],
+    });
+  }
   if (data.enableAgent && !data.agentApiKey) {
     ctx.addIssue({
       code: 'custom',

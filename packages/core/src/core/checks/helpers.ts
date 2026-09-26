@@ -2,10 +2,13 @@ import ipaddr from 'ipaddr.js';
 
 import type { ResolvedSecurityConfig } from '../../models/config.js';
 import type { RouteConfig } from '../../models/route-config.js';
+import type { IPBanManager } from '../../handlers/ip-ban.js';
 import type { SusPatternsManager } from '../../handlers/sus-patterns.js';
+import type { Logger } from '../../models/logger.js';
 import type { GeoIPHandler } from '../../protocols/geo-ip.js';
 import type { GuardMiddlewareProtocol } from '../../protocols/middleware.js';
 import type { GuardRequest } from '../../protocols/request.js';
+import { logActivity } from '../../utils.js';
 
 export function isIpInBlacklist(clientIp: string, blacklist: string[]): boolean {
   for (const blocked of blacklist) {
@@ -140,7 +143,7 @@ export async function detectPenetrationPatterns(
   config: ResolvedSecurityConfig,
   shouldBypassCheckFn: (check: string, rc: RouteConfig | null) => boolean,
   susPatternsManager?: SusPatternsManager | null,
-): Promise<[boolean, string]> {
+): Promise<[boolean, string, string[]]> {
   let penetrationEnabled = config.enablePenetrationDetection;
   let routeSpecificDetection: boolean | null = null;
 
@@ -161,5 +164,126 @@ export async function detectPenetrationPatterns(
   const reason = routeSpecificDetection === false && config.enablePenetrationDetection
     ? 'disabled_by_decorator'
     : 'not_enabled';
-  return [false, reason];
+  return [false, reason, []];
+}
+
+/* Cap on the number of IPs tracked in the shared suspicious-count structure,
+   mirroring _MAX_TRACKED_SUSPICIOUS_IPS in
+   guard_core/core/checks/helpers.py. */
+const MAX_TRACKED_SUSPICIOUS_IPS = 10_000;
+
+/**
+ * Per-IP per-category violation counter, the port of _increment_suspicious_counts
+ * (guard_core/core/checks/helpers.py): a string collapses to a single
+ * category, an empty category list collapses to 'uncategorized', counts
+ * refresh the IP's recency (pop then re-insert), and the oldest tracked IP
+ * is evicted once the cap is reached.
+ */
+export function incrementSuspiciousCounts(
+  middleware: GuardMiddlewareProtocol,
+  clientIp: string,
+  categories: string | readonly string[],
+): void {
+  const resolvedCategories: readonly string[] = typeof categories === 'string'
+    ? [categories]
+    : (categories.length > 0 ? categories : ['uncategorized']);
+
+  const counts = middleware.suspiciousRequestCounts;
+  const ipCounts = counts.get(clientIp);
+  counts.delete(clientIp);
+  if (!ipCounts && counts.size >= MAX_TRACKED_SUSPICIOUS_IPS) {
+    const oldestIp = counts.keys().next().value;
+    if (oldestIp !== undefined) counts.delete(oldestIp);
+  }
+  const updated = ipCounts ?? new Map<string, number>();
+  for (const category of resolvedCategories) {
+    updated.set(category, (updated.get(category) ?? 0) + 1);
+  }
+  counts.set(clientIp, updated);
+}
+
+/**
+ * Total violations across every category for one IP, the port of
+ * SuspiciousActivityCheck._total_count_for_ip (reference
+ * suspicious_activity.py): the request_count reported on events and the
+ * total the flat autoBanThreshold path is measured against.
+ */
+export function totalSuspiciousCount(
+  middleware: GuardMiddlewareProtocol,
+  clientIp: string,
+): number {
+  const ipCounts = middleware.suspiciousRequestCounts.get(clientIp);
+  if (!ipCounts) return 0;
+  let total = 0;
+  for (const count of ipCounts.values()) total += count;
+  return total;
+}
+
+/**
+ * Pure threshold resolution plus the ban_ip call, the port of
+ * _resolve_and_apply_threshold_ban (guard_core/core/checks/helpers.py):
+ * threatBanConfig per-category entries are tried first in threatCategories
+ * order, then the flat autoBanThreshold/autoBanDuration against the total of
+ * all categories. Returns [duration, banReason, category] when a ban was
+ * applied (category null for the flat fallback), or null when banning is
+ * disabled, no manager is available, or no threshold was crossed.
+ */
+export async function resolveThresholdBan(
+  ipCounts: ReadonlyMap<string, number>,
+  config: ResolvedSecurityConfig,
+  ipBanManager: IPBanManager | null,
+  clientIp: string,
+  threatCategories: readonly string[],
+  reason: string,
+): Promise<[number, string, string | null] | null> {
+  if (!config.enableIpBanning) return null;
+  if (!ipBanManager) return null;
+
+  for (const category of threatCategories) {
+    const entry = config.threatBanConfig[category];
+    if (!entry || (ipCounts.get(category) ?? 0) < entry.threshold) continue;
+    const banReason = `${reason}:${category}`;
+    const applied = await ipBanManager.banIp(clientIp, entry.duration, banReason);
+    if (!applied) return null;
+    return [entry.duration, banReason, category];
+  }
+
+  let total = 0;
+  for (const count of ipCounts.values()) total += count;
+  if (total < config.autoBanThreshold) return null;
+
+  const applied = await ipBanManager.banIp(clientIp, config.autoBanDuration, reason);
+  if (!applied) return null;
+  return [config.autoBanDuration, reason, null];
+}
+
+/**
+ * Threshold ban with its ban-time logging, the port of _try_threshold_ban
+ * (guard_core/core/checks/helpers.py): resolves the ban against the IP's
+ * current counts and, when one fired, logs it as a suspicious event naming
+ * the crossed category (or the flat threshold).
+ */
+export async function tryThresholdBan(
+  request: GuardRequest,
+  config: ResolvedSecurityConfig,
+  ipBanManager: IPBanManager | null,
+  middleware: GuardMiddlewareProtocol,
+  clientIp: string,
+  triggerInfo: string,
+  logger: Logger,
+  threatCategories: readonly string[],
+  reason = 'penetration_attempt',
+): Promise<boolean> {
+  const ipCounts = middleware.suspiciousRequestCounts.get(clientIp) ?? new Map<string, number>();
+  const result = await resolveThresholdBan(
+    ipCounts, config, ipBanManager, clientIp, threatCategories, reason,
+  );
+  if (!result) return false;
+
+  const [, , category] = result;
+  const logReason = category !== null
+    ? `IP banned due to ${category} threshold: ${clientIp} - ${triggerInfo}`
+    : `IP banned due to suspicious activity: ${clientIp} - ${triggerInfo}`;
+  logActivity(request, logger, 'suspicious', logReason, config.passiveMode, '', config.logSuspiciousLevel);
+  return true;
 }

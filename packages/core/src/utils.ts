@@ -228,6 +228,11 @@ const MONGO_OPERATOR_KEY_RE =
 interface ScanBudget {
   values: number;
   chars: number;
+  /* Detection categories of the threats matched so far, mirroring the
+     reference DetectionResult.threat_categories accumulation: the scan stops
+     at the first hit, so after a threat this holds that hit's categories,
+     which the caller reports to the autoban counter. */
+  categories: string[];
 }
 
 /**
@@ -320,16 +325,31 @@ function buildThreatMessage(result: DetectionResult): string {
  * honor it, like the reference threading excluded_body_fields through
  * _scan_form_body, _scan_multipart_part, _scan_query_param_value and
  * _scan_normal_header_component).
+ *
+ * The third tuple element carries the matched hit's detection categories
+ * (reference DetectionResult.threat_categories), the input to the autoban
+ * counter; empty on a clean scan since scanning stops at the first hit.
  */
 export async function scanRequestWithManager(
   manager: SusPatternsManager,
   request: GuardRequest,
   config?: Pick<ResolvedSecurityConfig, 'excludedDetectionParams' | 'excludedDetectionBodyFields'>,
-): Promise<[boolean, string]> {
+): Promise<[boolean, string, string[]]> {
   const clientIp = request.clientHost ?? 'unknown';
-  const budget: ScanBudget = { values: 0, chars: 0 };
+  const budget: ScanBudget = { values: 0, chars: 0, categories: [] };
   const exclusions = resolveScanExclusions(config);
 
+  const [isThreat, info] = await runRequestSurfaceScan(manager, request, clientIp, budget, exclusions);
+  return [isThreat, info, budget.categories];
+}
+
+async function runRequestSurfaceScan(
+  manager: SusPatternsManager,
+  request: GuardRequest,
+  clientIp: string,
+  budget: ScanBudget,
+  exclusions: ScanExclusions,
+): Promise<[boolean, string]> {
   for (const [key, value] of Object.entries(request.queryParams)) {
     if (isExcludedParam(exclusions, key)) continue;
     const nameHit = await detectComponent(manager, key, `query_param:${key}`, clientIp, budget);
@@ -482,7 +502,18 @@ async function detectValueEnhanced(
     return [false, ''];
   }
   if (!result.isThreat) return [false, ''];
+  recordHitCategories(budget, result);
   return [true, buildThreatMessage(result)];
+}
+
+/* Mirror of the reference threat_categories accumulation
+   (_build_detection_hit in detection_result_builders.py): dedupe preserving
+   first-seen order. The scan stops at the first hit, so the categories
+   recorded here are exactly the ones reported to the caller. */
+function recordHitCategories(budget: ScanBudget, result: DetectionResult): void {
+  for (const category of result.threatCategories ?? []) {
+    if (!budget.categories.includes(category)) budget.categories.push(category);
+  }
 }
 
 /**
@@ -500,6 +531,7 @@ async function detectComponent(
   try {
     const result = await manager.detect(value, clientIp, context);
     if (!result.isThreat) return [false, ''];
+    recordHitCategories(budget, result);
     return [true, buildThreatMessage(result)];
   } catch {
     return [false, ''];
@@ -616,7 +648,7 @@ async function scanCappedJsonSubtree(
  */
 export async function detectPenetrationAttempt(
   request: GuardRequest,
-): Promise<[boolean, string]> {
+): Promise<[boolean, string, string[]]> {
   const { manager, config } = await getDefaultSusPatternsManager();
   return scanRequestWithManager(manager, request, config);
 }

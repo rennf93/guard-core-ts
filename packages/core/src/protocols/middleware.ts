@@ -8,7 +8,11 @@ export interface GuardMiddlewareProtocol {
   readonly config: ResolvedSecurityConfig;
   readonly logger: Logger;
   lastCloudIpRefresh: number;
-  suspiciousRequestCounts: Map<string, number>;
+  /* Per-IP per-detection-category violation counters, the TS twin of the
+     reference middleware.suspicious_request_counts dict-of-dicts
+     (guard_core/core/checks/helpers.py): the autoban engine reads the
+     category totals against autoBanThreshold and threatBanConfig. */
+  suspiciousRequestCounts: Map<string, Map<string, number>>;
   readonly eventBus: unknown;
   readonly routeResolver: unknown;
   readonly responseFactory: unknown;
